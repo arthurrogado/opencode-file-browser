@@ -132,7 +132,7 @@ Disable the plugin:
 
 ```json
 {
-  "plugins": ["-file-browser"]
+  "plugins": ["-opencode-file-browser"]
 }
 ```
 

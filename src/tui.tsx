@@ -824,7 +824,7 @@ function Commands(props: { context: Plugin.Context }) {
 }
 
 export default Plugin.define({
-  id: "file-browser",
+  id: "opencode-file-browser",
   setup(context) {
     const offPanel = context.ui.slot({
       append: "session.panel",
