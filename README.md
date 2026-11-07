@@ -178,9 +178,13 @@ explicit imports that the host can rewrite to its own `solid-js` and
 `@opentui/solid` instances.
 
 ```sh
-npm install
-npm run build
+npm install --no-save @babel/core @babel/preset-typescript babel-preset-solid
+node build.mjs
 ```
+
+The build tools are intentionally not `devDependencies`: npm installs those
+while preparing a Git dependency, which makes `opencode plugin add` slower and
+more fragile. The compiled `dist/tui.js` is committed.
 
 To try a local checkout, either add its path to `cli.json` or symlink it into
 the discovery directory:
