@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import type { LocationRef } from "@opencode/client"
 import type { PanelInput, Route } from "@opencode/plugin/tui/context"
 import { Plugin } from "@opencode/plugin/tui"
