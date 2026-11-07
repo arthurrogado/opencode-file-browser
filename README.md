@@ -172,15 +172,25 @@ Disable the plugin:
 
 ## Development
 
-This repository uses the package layout that OpenCode resolves for TUI plugins
-(`exports["./tui"]`). To try a local checkout, either add its path to
-`cli.json` or symlink it into the discovery directory:
+The published entry is `dist/tui.js`. It is built from `src/tui.tsx` with the
+same Babel/Solid transform OpenCode uses for local plugins, so the output has
+explicit imports that the host can rewrite to its own `solid-js` and
+`@opentui/solid` instances.
+
+```sh
+npm install
+npm run build
+```
+
+To try a local checkout, either add its path to `cli.json` or symlink it into
+the discovery directory:
 
 ```sh
 ln -s "$PWD" ~/.config/opencode/plugins/file-browser
 ```
 
-OpenCode watches that directory and hot-reloads the plugin on save.
+OpenCode watches that directory and reloads the plugin on save. Rebuild after
+editing `src/tui.tsx`.
 
 ## Contributing
 
