@@ -52,42 +52,49 @@ with syntax highlighting — without leaving OpenCode.
 
 ## Install
 
-### From GitHub (recommended)
+### Clone into the plugin directory (recommended)
+
+```sh
+git clone https://github.com/arthurrogado/opencode-file-browser \
+  ~/.config/opencode/plugins/file-browser
+```
+
+Or run the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/arthurrogado/opencode-file-browser/main/install.sh | sh
+```
+
+OpenCode discovers plugin directories under the config directory. Restart the
+TUI (or run `/reload`) if it does not appear. Update later with:
+
+```sh
+git -C ~/.config/opencode/plugins/file-browser pull
+```
+
+The repository ships a prebuilt `dist/tui.js`, so nothing needs to be compiled
+on install.
+
+### As a package
 
 ```sh
 opencode plugin add github:arthurrogado/opencode-file-browser
 ```
 
 That installs the package and adds it to your global TUI config
-(`~/.config/opencode/cli.json`). Restart OpenCode if the plugin list does not
-refresh.
-
-Using SSH instead:
-
-```sh
-opencode plugin add git+ssh://git@github.com/arthurrogado/opencode-file-browser.git
-```
+(`~/.config/opencode/cli.json`). Package installs also download the OpenTUI and
+Solid runtime peers, so they need a working npm connection and take longer than
+the clone above.
 
 ### Manual
 
-Add the package to `~/.config/opencode/cli.json`:
-
-```json
-{
-  "plugins": ["opencode-file-browser"]
-}
-```
-
-Or point at a local checkout (useful for development):
+Point `~/.config/opencode/cli.json` at a checkout:
 
 ```json
 {
   "plugins": ["/home/you/dev/opencode-file-browser"]
 }
 ```
-
-You can also copy the folder into `~/.config/opencode/plugins/file-browser/`;
-OpenCode discovers plugin directories there automatically.
 
 ## Usage
 
