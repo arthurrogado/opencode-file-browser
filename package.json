@@ -1,0 +1,53 @@
+{
+  "name": "opencode-file-browser",
+  "version": "0.1.0",
+  "description": "Browse folders and preview Markdown and code inside the OpenCode TUI",
+  "type": "module",
+  "exports": {
+    "./tui": "./src/tui.tsx"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-tui",
+    "tui",
+    "file-browser",
+    "file-viewer",
+    "markdown",
+    "syntax-highlighting"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arthurrogado/opencode-file-browser.git"
+  },
+  "homepage": "https://github.com/arthurrogado/opencode-file-browser#readme",
+  "bugs": {
+    "url": "https://github.com/arthurrogado/opencode-file-browser/issues"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "*",
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  }
+}
