@@ -3,11 +3,12 @@ import type { PanelInput, Route } from "@opencode/plugin/tui/context"
 import { Plugin } from "@opencode/plugin/tui"
 import { MouseButton, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { For, Show, createEffect, createSignal, onMount } from "solid-js"
+import { ErrorBoundary, For, Show, createEffect, createSignal, onMount } from "solid-js"
 
 const ROUTE = "file-browser"
 const MAX_LINES = 6000
 const MAX_CHARS = 512 * 1024
+const MAX_LINE_CHARS = 4000
 
 type Entry = { readonly path: string; readonly type: "file" | "directory" }
 
@@ -153,6 +154,18 @@ const formatBytes = (value: number) => {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// Some native text buffers cannot handle pathologically long lines; clip them
+// instead of risking a renderer failure on minified bundles or data files.
+const clampLongLines = (text: string) => {
+  let clipped = false
+  const lines = text.split("\n").map((line) => {
+    if (line.length <= MAX_LINE_CHARS) return line
+    clipped = true
+    return line.slice(0, MAX_LINE_CHARS) + " …"
+  })
+  return { text: lines.join("\n"), clipped }
+}
+
 const message = (cause: unknown) => {
   if (cause instanceof Error) return cause.message
   return String(cause)
@@ -244,6 +257,16 @@ function FileBrowser(props: {
 
   let listScroll: ScrollBoxRenderable | undefined
   let contentScroll: ScrollBoxRenderable | undefined
+  // A hot reload or route change can dispose the renderables while a read is
+  // still in flight; never touch a destroyed scrollbox.
+  const content = () => (contentScroll && !contentScroll.isDestroyed ? contentScroll : undefined)
+  const list = () => (listScroll && !listScroll.isDestroyed ? listScroll : undefined)
+  const resetContentScroll = () => {
+    if (renderer.isDestroyed) return
+    try {
+      renderer.requestAnimationFrame(() => content()?.scrollTo(0))
+    } catch {}
+  }
   let listToken = 0
   let readToken = 0
 
@@ -304,8 +327,11 @@ function FileBrowser(props: {
         text = text.slice(0, MAX_CHARS)
         truncated = true
       }
+      const clamped = clampLongLines(text)
+      text = clamped.text
+      truncated = truncated || clamped.clipped
       setFile({ path: entry.path, text, type: filetype(entry.path), markdown: isMarkdown(entry.path), truncated })
-      renderer.requestAnimationFrame(() => contentScroll?.scrollTo(0))
+      resetContentScroll()
     } catch (cause) {
       if (token === readToken) {
         setFile(undefined)
@@ -332,7 +358,7 @@ function FileBrowser(props: {
       setIndex((value) => Math.max(0, Math.min(total - 1, value + delta)))
       return
     }
-    contentScroll?.scrollBy(delta)
+    content()?.scrollBy(delta)
   }
 
   function page(direction: -1 | 1) {
@@ -340,7 +366,7 @@ function FileBrowser(props: {
       move(direction * Math.max(1, Math.floor(dimensions().height / 2)))
       return
     }
-    const scroll = contentScroll
+    const scroll = content()
     if (!scroll) return
     scroll.scrollBy(direction * Math.max(1, Math.floor(scroll.viewport.height / 2)))
   }
@@ -363,7 +389,7 @@ function FileBrowser(props: {
   function toggleMarkdown() {
     if (!file()?.markdown) return
     setRendered((value) => !value)
-    renderer.requestAnimationFrame(() => contentScroll?.scrollTo(0))
+    resetContentScroll()
   }
 
   function toggleFullscreen() {
@@ -414,7 +440,7 @@ function FileBrowser(props: {
       bind: "g,home",
       run: () => {
         if (focus() === "list") setIndex(0)
-        else contentScroll?.scrollTo(0)
+        else content()?.scrollTo(0)
       },
     },
     {
@@ -424,7 +450,10 @@ function FileBrowser(props: {
       bind: "shift+g,end",
       run: () => {
         if (focus() === "list") setIndex(Math.max(0, entries().length - 1))
-        else if (contentScroll) contentScroll.scrollTo(contentScroll.scrollHeight)
+        else {
+          const scroll = content()
+          if (scroll) scroll.scrollTo(scroll.scrollHeight)
+        }
       },
     },
     { id: "file-browser.markdown", title: "Toggle Markdown/source", group: "Files", bind: "m", run: toggleMarkdown },
@@ -467,7 +496,7 @@ function FileBrowser(props: {
     const selected = index()
     const total = entries().length
     if (total === 0) return
-    const scroll = listScroll
+    const scroll = list()
     if (!scroll || scroll.isDestroyed) return
     if (selected < scroll.scrollTop) scroll.scrollTo(selected)
     else if (selected + 1 > scroll.scrollTop + scroll.viewport.height)
@@ -624,6 +653,15 @@ function FileBrowser(props: {
             </box>
           </Show>
 
+          <ErrorBoundary
+            fallback={(error) => (
+              <box flexGrow={1} padding={1}>
+                <text fg={theme.text.feedback.error.base} wrapMode="word">
+                  Could not render this file: {message(error)}
+                </text>
+              </box>
+            )}
+          >
           <Show when={!fileError() && file()}>
             {(active) => (
               <Show
@@ -670,6 +708,7 @@ function FileBrowser(props: {
               </Show>
             )}
           </Show>
+          </ErrorBoundary>
         </box>
       </box>
 
