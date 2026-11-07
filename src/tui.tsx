@@ -5,6 +5,9 @@ import { Plugin } from "@opencode/plugin/tui"
 import { MouseButton, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { ErrorBoundary, For, Show, createEffect, createSignal, onMount } from "solid-js"
+import path from "node:path"
+import { readFile, stat } from "node:fs/promises"
+import { homedir } from "node:os"
 
 const ROUTE = "file-browser"
 const MAX_LINES = 6000
@@ -15,6 +18,7 @@ type Entry = { readonly path: string; readonly type: "file" | "directory" }
 
 type LoadedFile = {
   readonly path: string
+  readonly external: boolean
   readonly text: string
   readonly type: string
   readonly markdown: boolean
@@ -118,6 +122,12 @@ const EXTENSIONS: Record<string, string> = {
   ".nix": "nix",
   ".typ": "typst",
   ".typc": "typst",
+}
+
+const expandHome = (value: string) => {
+  if (value === "~") return homedir()
+  if (value.startsWith("~/") || value.startsWith("~\\")) return path.join(homedir(), value.slice(2))
+  return value
 }
 
 const basename = (path: string) => {
@@ -303,13 +313,15 @@ function FileBrowser(props: {
     }
   }
 
-  async function read(entry: Entry) {
+  async function show(target: string, external: boolean) {
     const token = ++readToken
     setFileError(undefined)
     setRendered(true)
     setFocus("content")
     try {
-      const bytes = await context.client.file.read({ location: props.location(), path: entry.path })
+      const bytes = external
+        ? new Uint8Array(await readFile(target))
+        : await context.client.file.read({ location: props.location(), path: target })
       if (token !== readToken) return
       const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBufferLike)
       if (isBinary(data)) {
@@ -331,7 +343,7 @@ function FileBrowser(props: {
       const clamped = clampLongLines(text)
       text = clamped.text
       truncated = truncated || clamped.clipped
-      setFile({ path: entry.path, text, type: filetype(entry.path), markdown: isMarkdown(entry.path), truncated })
+      setFile({ path: target, external, text, type: filetype(target), markdown: isMarkdown(target), truncated })
       resetContentScroll()
     } catch (cause) {
       if (token === readToken) {
@@ -339,6 +351,55 @@ function FileBrowser(props: {
         setFileError(message(cause))
       }
     }
+  }
+
+  async function read(entry: Entry) {
+    await show(entry.path, false)
+  }
+
+  // Project files go through the server (works with remote servers). Anything
+  // outside the project is read from this machine with node:fs instead.
+  function relativeToLocation(target: string) {
+    const relative = path.relative(props.location().directory, target)
+    if (!relative) return ""
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined
+    return relative
+  }
+
+  async function openPath(input: string) {
+    const value = input.trim()
+    if (!value) return
+    const base = dir() ? path.join(props.location().directory, dir()) : props.location().directory
+    const target = path.resolve(base, expandHome(value))
+    const relative = relativeToLocation(target)
+    const info = await stat(target).catch(() => undefined)
+    if (info?.isDirectory()) {
+      if (relative === undefined) {
+        setFile(undefined)
+        setFileError("That directory is outside the project.")
+        return
+      }
+      setFile(undefined)
+      setFileError(undefined)
+      setFocus("list")
+      await load(relative)
+      return
+    }
+    if (!info) {
+      setFile(undefined)
+      setFileError(`Not found: ${target}`)
+      return
+    }
+    await show(relative ?? target, relative === undefined)
+  }
+
+  async function promptPath() {
+    const value = await context.ui.dialog.prompt({
+      title: "Open file by path",
+      description: "Absolute path, or relative to the current folder. ~ points to your home.",
+      placeholder: "/path/to/file or ../notes.md",
+    })
+    if (value) await openPath(value)
   }
 
   function open(entry: Entry) {
@@ -383,7 +444,7 @@ function FileBrowser(props: {
 
   function reload() {
     const active = file()
-    if (active) void read({ path: active.path, type: "file" })
+    if (active) void show(active.path, active.external)
     void load(dir(), false)
   }
 
@@ -460,6 +521,7 @@ function FileBrowser(props: {
     { id: "file-browser.markdown", title: "Toggle Markdown/source", group: "Files", bind: "m", run: toggleMarkdown },
     { id: "file-browser.reload", title: "Reload", group: "Files", bind: "r", run: reload },
     { id: "file-browser.hidden", title: "Toggle hidden files", group: "Files", bind: "h", run: toggleHidden },
+    { id: "file-browser.path", title: "Open file by path", group: "Files", bind: "o", run: () => void promptPath() },
     {
       id: "file-browser.fullscreen",
       title: "Toggle fullscreen",
@@ -480,6 +542,20 @@ function FileBrowser(props: {
 
   // The panel is mounted once per open; load the root of the session location.
   onMount(() => void load(""))
+
+  // Requests from the global "open by path" command arrive through shared
+  // in-memory state, since the browser may mount after the prompt resolves.
+  const [pending, updatePending] = context.storage.memory<{ path?: string; seq: number }>("pending", {
+    initial: { seq: 0 },
+  })
+  createEffect(() => {
+    const request = pending.path
+    if (!request) return
+    void updatePending((draft) => {
+      draft.path = undefined
+    })
+    void openPath(request)
+  })
 
   let lastRoot: string | undefined
   createEffect(() => {
@@ -625,12 +701,13 @@ function FileBrowser(props: {
         >
           <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1} gap={1}>
             <text fg={theme.text.base} attributes={TextAttributes.BOLD} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-              {file() ? basename(file()!.path) : ""}
+              {file() ? (file()!.external ? context.ui.format.path(file()!.path) : basename(file()!.path)) : ""}
             </text>
             <Show when={file()}>
               {(active) => (
                 <text fg={theme.text.muted} wrapMode="none" flexShrink={0}>
                   {active().type}
+                  {active().external ? " · external" : ""}
                   {active().truncated ? " · truncated" : ""}
                   {active().markdown ? (rendered() ? " · md" : " · source") : ""}
                 </text>
@@ -724,7 +801,7 @@ function FileBrowser(props: {
           file
         </text>
         <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-          ↑↓ enter ⌫ tab m r h {props.panel ? "f " : ""}esc
+          ↑↓ enter ⌫ tab m r h o {props.panel ? "f " : ""}esc
         </text>
       </box>
     </box>
@@ -760,6 +837,63 @@ function BrowserRoute(props: {
 
 function Commands(props: { context: Plugin.Context }) {
   const [view] = props.context.storage.store<{ fullscreen: boolean }>("view", { initial: { fullscreen: false } })
+  const [, updatePending] = props.context.storage.memory<{ path?: string; seq: number }>("pending", {
+    initial: { seq: 0 },
+  })
+
+  const ensureOpen = () => {
+    const route = props.context.ui.router.current()
+    const panel = props.context.ui.panel.current()
+    if (route.type === "session" && panel?.sessionID === route.sessionID && panel.name === ROUTE) return
+    if (route.type === "plugin" && route.name === ROUTE) return
+    if (props.context.ui.panel.open(ROUTE, { presentation: view.fullscreen ? "fullscreen" : "panel" })) return
+    const returnRoute: Route =
+      route.type === "home"
+        ? { type: "home" }
+        : route.type === "session"
+          ? { type: "session", sessionID: route.sessionID }
+          : {
+              type: "plugin",
+              id: route.id,
+              name: route.name,
+              ...(route.data ? { data: { ...route.data } } : {}),
+            }
+    // Defer so the key that opened us finishes dispatching before the route
+    // mounts its own keymap layer.
+    setTimeout(
+      () =>
+        props.context.ui.router.navigate({
+          type: "plugin",
+          name: ROUTE,
+          data: {
+            sessionID: route.type === "session" ? route.sessionID : undefined,
+            directory:
+              route.type === "session"
+                ? (props.context.data.session.get(route.sessionID)?.location?.directory ??
+                  props.context.data.location.default().directory)
+                : props.context.data.location.default().directory,
+            returnRoute,
+          },
+        }),
+      0,
+    )
+  }
+
+  const askPath = async () => {
+    const value = await props.context.ui.dialog.prompt({
+      title: "Open file by path",
+      description: "Absolute path, or relative to the current folder. ~ points to your home.",
+      placeholder: "/path/to/file or ../notes.md",
+    })
+    const target = value?.trim()
+    if (!target) return
+    void updatePending((draft) => {
+      draft.path = target
+      draft.seq += 1
+    })
+    ensureOpen()
+  }
+
   props.context.keymap.layer(() => ({
     mode: "global",
     commands: [
@@ -785,38 +919,17 @@ function Commands(props: { context: Plugin.Context }) {
             props.context.ui.panel.close()
             return
           }
-          if (props.context.ui.panel.open(ROUTE, { presentation: view.fullscreen ? "fullscreen" : "panel" })) return
-          const returnRoute: Route =
-            route.type === "home"
-              ? { type: "home" }
-              : route.type === "session"
-                ? { type: "session", sessionID: route.sessionID }
-                : {
-                    type: "plugin",
-                    id: route.id,
-                    name: route.name,
-                    ...(route.data ? { data: { ...route.data } } : {}),
-                  }
-          // Defer so the key that opened us finishes dispatching before the
-          // route mounts its own keymap layer.
-          setTimeout(
-            () =>
-              props.context.ui.router.navigate({
-                type: "plugin",
-                name: ROUTE,
-                data: {
-                  sessionID: route.type === "session" ? route.sessionID : undefined,
-                  directory:
-                    route.type === "session"
-                      ? (props.context.data.session.get(route.sessionID)?.location?.directory ??
-                        props.context.data.location.default().directory)
-                      : props.context.data.location.default().directory,
-                  returnRoute,
-                },
-              }),
-            0,
-          )
+          ensureOpen()
         },
+      },
+      {
+        id: "file-browser.open_path",
+        title: "Open file by path",
+        description: "Type a path and open it in the file browser",
+        group: "Files",
+        palette: true,
+        bind: "<leader>o",
+        run: askPath,
       },
     ],
   }))

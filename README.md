@@ -44,8 +44,10 @@ with syntax highlighting — without leaving OpenCode.
   - **full page** from the home screen (no session).
 - `f` toggles full screen in the panel, hiding the chat.
 - Mouse and keyboard navigation.
-- Reads through the OpenCode filesystem API, so it also works against a remote
-  server.
+- **Open any file by path** with a prompt: absolute paths, `~`, or a path
+  relative to the current folder — even files outside the project.
+- Project files are read through the OpenCode filesystem API, so the plugin
+  also works against a remote server.
 - No dependencies beyond the ones OpenCode already provides.
 
 ## Install
@@ -95,6 +97,14 @@ Run `opencode`, then:
 - `Ctrl+X` then `F`
 - `Ctrl+P` → **Open file browser**
 
+To jump straight to one file:
+
+- `Ctrl+X` then `O`, or `Ctrl+P` → **Open file by path**
+- inside the browser, press `o`
+
+The prompt accepts an absolute path, a `~` path, or a path relative to the
+current folder (for example `../notes.md`).
+
 Inside a session it opens as a side panel; on the home screen it opens full
 screen.
 
@@ -109,6 +119,7 @@ screen.
 | `PageUp` / `PageDown` | Page up / down |
 | `g` / `Shift+G` | Start / end |
 | `m` | Toggle rendered Markdown ↔ source |
+| `o` | Open a file by typing its path |
 | `r` | Reload the folder and the file |
 | `h` | Show/hide dotfiles |
 | `f` | Toggle full screen (panel only; hides the chat) |
@@ -141,7 +152,9 @@ Disable the plugin:
 - `context.ui.router.register` + `context.ui.slot("session.panel")` provide the
   two layouts.
 - `context.client.file.list` / `context.client.file.read` use the OpenCode
-  filesystem API.
+  filesystem API for files inside the project.
+- Files outside the project are read from the local machine with `node:fs`
+  (the server API is confined to the project directory).
 - `<code>` and `<markdown>` from OpenTUI render the preview; the `SyntaxStyle`
   is built from `context.theme`, so it matches the active theme.
 - The starting directory comes from the session location, falling back to the
@@ -152,7 +165,10 @@ Disable the plugin:
 - Read-only; it does not edit files.
 - Files larger than 6,000 lines or 512 KB are truncated in the preview.
 - Binary files (images, PDFs, …) show their size only.
-- Navigation is confined to the project/session directory.
+- The folder list is confined to the project/session directory; use **Open
+  file by path** to reach files elsewhere.
+- Paths outside the project are read from the machine running the TUI, so they
+  are not available when the TUI is connected to a remote server.
 
 ## Development
 
