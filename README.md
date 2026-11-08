@@ -52,7 +52,23 @@ with syntax highlighting — without leaving OpenCode.
 
 ## Install
 
-### Clone into the plugin directory (recommended)
+### From npm (recommended)
+
+```sh
+opencode plugin add opencode-file-browser
+```
+
+That installs the package into OpenCode's cache and adds it to
+`~/.config/opencode/cli.json`. The published entry is the prebuilt
+`dist/tui.js`, so nothing compiles on install.
+
+Update later with:
+
+```sh
+opencode plugin update opencode-file-browser
+```
+
+### From a clone
 
 ```sh
 git clone https://github.com/arthurrogado/opencode-file-browser \
@@ -66,28 +82,12 @@ curl -fsSL https://raw.githubusercontent.com/arthurrogado/opencode-file-browser/
 ```
 
 OpenCode discovers plugin directories under the config directory. Restart the
-TUI (or run `/reload`) if it does not appear. Update later with:
+TUI (or run `/reload`) if it does not appear. Update with `git -C
+~/.config/opencode/plugins/file-browser pull` or `/files-update`.
 
-```sh
-git -C ~/.config/opencode/plugins/file-browser pull
-```
-
-The repository ships a prebuilt `dist/tui.js`, so nothing needs to be compiled
-on install.
-
-### As a package
-
-```sh
-opencode plugin add github:arthurrogado/opencode-file-browser
-```
-
-This installs the package into OpenCode's cache and adds it to your config. No
-build step runs on install: the prebuilt `dist/tui.js` is used as-is.
-
-> On OpenCode 2.2.x builds compiled with Bun, installing a Git package fails if
-> its `package.json` has a `build`/`prepare` script, because npm tries to spawn
-> itself to prepare the dependency and the embedded `npm-cli.js` cannot run.
-> This package avoids that by using `bundle` as its build script name.
+> `opencode plugin add github:arthurrogado/opencode-file-browser` can fail with
+> `NpmInstallFailedError` on some 2.2.x builds while npm prepares the Git
+> dependency. Use the npm package or a clone instead.
 
 ### Manual
 
@@ -101,19 +101,23 @@ Point `~/.config/opencode/cli.json` at a checkout:
 
 ## Updating
 
-If you installed by cloning:
+If installed from npm:
+
+```sh
+opencode plugin update opencode-file-browser
+```
+
+If installed by cloning:
 
 ```sh
 git -C ~/.config/opencode/plugins/file-browser pull
 ```
 
-Or run `/files-update` inside OpenCode. The plugin knows its own checkout and
-runs `git pull --ff-only`; the TUI then reloads it. Package installs update
-with `opencode plugin update` (or `opencode plugin add
-opencode-file-browser@latest` once it is on npm).
+Or run `/files-update` inside OpenCode; it pulls the checkout and lets the TUI
+reload. Package installs get a pointer to `opencode plugin update`.
 
 You can also ask OpenCode to update it for you: “update the file-browser
-plugin” — it can run the same git command.
+plugin” — it can run the right command.
 
 ## Usage
 
