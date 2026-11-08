@@ -75,16 +75,15 @@ git -C ~/.config/opencode/plugins/file-browser pull
 The repository ships a prebuilt `dist/tui.js`, so nothing needs to be compiled
 on install.
 
-### As a package
+### As a package (experimental)
 
 ```sh
 opencode plugin add github:arthurrogado/opencode-file-browser
 ```
 
-That installs the package and adds it to your global TUI config
-(`~/.config/opencode/cli.json`). Package installs also download the OpenTUI and
-Solid runtime peers, so they need a working npm connection and take longer than
-the clone above.
+On some OpenCode 2.2.x builds this fails with `NpmInstallFailedError` while npm
+prepares the Git dependency. That is the package manager, not the plugin. If it
+happens, use the clone install above.
 
 ### Manual
 
