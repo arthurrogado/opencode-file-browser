@@ -99,11 +99,28 @@ Point `~/.config/opencode/cli.json` at a checkout:
 }
 ```
 
+## Updating
+
+If you installed by cloning:
+
+```sh
+git -C ~/.config/opencode/plugins/file-browser pull
+```
+
+Or run `/files-update` inside OpenCode. The plugin knows its own checkout and
+runs `git pull --ff-only`; the TUI then reloads it. Package installs update
+with `opencode plugin update` (or `opencode plugin add
+opencode-file-browser@latest` once it is on npm).
+
+You can also ask OpenCode to update it for you: “update the file-browser
+plugin” — it can run the same git command.
+
 ## Usage
 
 Run `opencode`, then:
 
 - `/files` (aliases: `/browse`, `/arquivos`)
+- `/files-update` (aliases: `/update-files`) to update a cloned install
 - `Ctrl+X` then `F`
 - `Ctrl+P` → **Open file browser**
 

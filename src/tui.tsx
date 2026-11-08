@@ -8,6 +8,9 @@ import { ErrorBoundary, For, Show, createEffect, createSignal, onCleanup, onMoun
 import path from "node:path"
 import { readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
+import { execFile } from "node:child_process"
+import { existsSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
 const ROUTE = "file-browser"
 const MAX_LINES = 6000
@@ -899,6 +902,31 @@ function Commands(props: { context: Plugin.Context }) {
     ensureOpen()
   }
 
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+
+  const update = async () => {
+    if (!existsSync(path.join(pluginRoot, ".git"))) {
+      props.context.ui.toast.show({
+        variant: "info",
+        message: "This install is managed by OpenCode. Update it with `opencode plugin update` or reinstall the package.",
+        duration: 8000,
+      })
+      return
+    }
+    props.context.ui.toast.show({ message: "Checking for updates…" })
+    const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
+      execFile("git", ["pull", "--ff-only"], { cwd: pluginRoot, timeout: 60_000 }, (error, stdout, stderr) => {
+        resolve({ ok: !error, text: `${stdout}${stderr}`.trim() })
+      })
+    })
+    const last = result.text.split("\n").filter(Boolean).pop() ?? ""
+    props.context.ui.toast.show({
+      variant: result.ok ? "success" : "error",
+      message: result.ok ? `File browser updated. ${last}` : `Update failed: ${last || "git pull failed"}`,
+      duration: 8000,
+    })
+  }
+
   props.context.keymap.layer(() => ({
     mode: "global",
     commands: [
@@ -935,6 +963,15 @@ function Commands(props: { context: Plugin.Context }) {
         palette: true,
         bind: "<leader>o",
         run: askPath,
+      },
+      {
+        id: "file-browser.update",
+        title: "Update file browser",
+        description: "Pull the latest version from GitHub",
+        group: "Files",
+        palette: true,
+        slash: { name: "files-update", aliases: ["update-files"] },
+        run: update,
       },
     ],
   }))
