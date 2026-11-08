@@ -12,7 +12,7 @@ import { createElement as _$createElement } from "@opentui/solid";
 import { Plugin } from "@opencode/plugin/tui";
 import { MouseButton, SyntaxStyle, TextAttributes } from "@opentui/core";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { ErrorBoundary, For, Show, createEffect, createSignal, onMount } from "solid-js";
+import { ErrorBoundary, For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -232,7 +232,12 @@ function FileBrowser(props) {
     }
   });
   const syntax = createSyntaxStyle(theme, renderer.nativeScene);
-  void renderer.idle?.()?.then(() => syntax.destroy());
+  // Destroy only when this component unmounts. renderer.idle() resolves after
+  // the next idle frame, not at teardown; destroying at setup kills the style
+  // while <markdown>/<code> are still drawing with it.
+  onCleanup(() => {
+    void renderer.idle?.()?.then(() => syntax.destroy());
+  });
   const surface = () => props.panel && props.panel.presentation === "panel" ? theme.background.raised.base : theme.background.base;
   const docked = () => props.panel !== undefined && props.panel.presentation === "panel";
   const [dir, setDir] = createSignal("");
