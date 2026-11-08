@@ -75,15 +75,19 @@ git -C ~/.config/opencode/plugins/file-browser pull
 The repository ships a prebuilt `dist/tui.js`, so nothing needs to be compiled
 on install.
 
-### As a package (experimental)
+### As a package
 
 ```sh
 opencode plugin add github:arthurrogado/opencode-file-browser
 ```
 
-On some OpenCode 2.2.x builds this fails with `NpmInstallFailedError` while npm
-prepares the Git dependency. That is the package manager, not the plugin. If it
-happens, use the clone install above.
+This installs the package into OpenCode's cache and adds it to your config. No
+build step runs on install: the prebuilt `dist/tui.js` is used as-is.
+
+> On OpenCode 2.2.x builds compiled with Bun, installing a Git package fails if
+> its `package.json` has a `build`/`prepare` script, because npm tries to spawn
+> itself to prepare the dependency and the embedded `npm-cli.js` cannot run.
+> This package avoids that by using `bundle` as its build script name.
 
 ### Manual
 
@@ -185,7 +189,7 @@ explicit imports that the host can rewrite to its own `solid-js` and
 
 ```sh
 npm install --no-save @babel/core @babel/preset-typescript babel-preset-solid
-node build.mjs
+npm run bundle
 ```
 
 The build tools are intentionally not `devDependencies`: npm installs those
