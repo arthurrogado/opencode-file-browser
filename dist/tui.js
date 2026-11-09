@@ -211,7 +211,7 @@ function createSyntaxStyle(theme, owner) {
     italic: true
   }), rule(["error"], feedback.error.base, {
     bold: true
-  }), rule(["markup.heading", "markup.heading.2", "markup.heading.3"], markdown.heading, {
+  }), rule(["markup.heading", "markup.heading.1", "markup.heading.2", "markup.heading.3", "markup.heading.4", "markup.heading.5", "markup.heading.6"], markdown.heading, {
     bold: true
   }), rule(["markup.bold", "markup.strong"], markdown.strong, {
     bold: true
