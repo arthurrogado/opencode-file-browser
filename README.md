@@ -7,31 +7,13 @@ with syntax highlighting — without leaving OpenCode.
 > Built for **OpenCode V2** (tested on v2.2.5). It is a TUI-only plugin, so it
 > keeps working when the TUI is connected to a remote server.
 
-```
-  files ~/project                                                                 4 items
-┌──────────────────────────────────┐┌──────────────────────────────────────────────────┐
-│ ▸ docs/                         █││ README.md                          markdown · md │
-│ ▸ src/                          █││ # demo-app                                      █│
-│   package.json                  █││                                                 █│
-│   README.md                     █││ A tiny example project used to show the         █│
-│                                 █││ OpenCode file browser.                          █│
-│                                 █││                                                 █│
-│                                 █││ ## Getting started                              █│
-│                                 █││ npm install                                     █│
-│                                 █││ npm run dev                                     █│
-│                                 █││                                                 █│
-│                                 █││ ## Layout                                       █│
-│                                 █││                                                 █│
-│                                 █││ - `src/server.ts` — HTTP server                 █│
-│                                 █││ - `docs/guide.md` — usage guide                 █│
-│                                 █││                                                 █│
-│                                 █││                                                 █│
-│                                 █││                                                 █│
-│                                 █││                                                 █│
-│ ~/project                       ││                                                 █│
-└──────────────────────────────────┘└──────────────────────────────────────────────────┘
- list / file ↑↓ enter ⌫ tab m r h f esc
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/arthurrogado/opencode-file-browser/main/docs/screenshots/markdown-demo.png" alt="Markdown preview in the OpenCode TUI" width="820">
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/arthurrogado/opencode-file-browser/main/docs/screenshots/python-demo.png" alt="Python syntax highlighting in the OpenCode TUI" width="820">
+</p>
 
 ## Features
 
