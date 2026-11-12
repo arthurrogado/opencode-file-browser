@@ -52,7 +52,6 @@ export function registerBrowserLayers(context: Plugin.Context) {
   context.keymap.layer(() => {
     const current = controller()
     return {
-      mode: "global",
       priority: 105,
       enabled: () => !!current && current.enabled(),
       commands: current?.keys() ?? [],
@@ -61,7 +60,6 @@ export function registerBrowserLayers(context: Plugin.Context) {
   context.keymap.layer(() => {
     const current = controller()
     return {
-      mode: "global",
       priority: 100,
       enabled: () => !!current && current.enabled() && !current.typing(),
       commands: current?.commands() ?? [],
@@ -70,7 +68,6 @@ export function registerBrowserLayers(context: Plugin.Context) {
   context.keymap.layer(() => {
     const current = controller()
     return {
-      mode: "global",
       priority: 110,
       enabled: () => !!current && current.changesEnabled(),
       commands: current?.changes() ?? [],

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCode File Browser — explorer, editor and git in the TUI</title>
+<meta name="description" content="A file explorer, editor and git panel for the OpenCode terminal UI. Tabs, syntax colours, diffs, commits and preferences, all in the TUI.">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0a0a;
+    --panel: #101216;
+    --line: #23262e;
+    --text: #e6e6e6;
+    --muted: #8b93a7;
+    --accent: #f5a742;
+    --green: #7ee787;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--mono); }
+  a { color: var(--green); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header { border-bottom: 1px solid var(--line); }
+  header .wrap { height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .01em; }
+  .brand span { color: var(--accent); }
+  nav { display: flex; gap: 18px; font-size: 13px; color: var(--muted); }
+  nav a { color: var(--muted); }
+  nav a:hover { color: var(--text); text-decoration: none; }
+
+  .hero { padding: 72px 0 40px; text-align: center; }
+  .badge { display: inline-flex; gap: 8px; align-items: center; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 6px 14px; font-size: 12px; }
+  .badge b { color: var(--green); font-weight: 600; }
+  h1 { font-size: clamp(34px, 5vw, 56px); line-height: 1.05; margin: 22px 0 14px; letter-spacing: -.02em; }
+  h1 em { font-style: normal; color: var(--accent); }
+  .sub { max-width: 720px; margin: 0 auto; color: var(--muted); font-size: 16px; line-height: 1.65; }
+  .install { margin: 30px auto 0; max-width: 560px; display: flex; align-items: stretch; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; overflow: hidden; }
+  .install code { flex: 1; padding: 14px 16px; font-size: 14px; text-align: left; color: var(--text); overflow-x: auto; white-space: nowrap; }
+  .install code b { color: var(--accent); font-weight: 500; }
+  .install button { border: 0; border-left: 1px solid var(--line); background: #15181e; color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 16px; cursor: pointer; }
+  .install button:hover { color: var(--text); background: #1b1f27; }
+  .meta { margin-top: 14px; color: var(--muted); font-size: 12px; }
+  .meta a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+
+  .shot { margin: 44px 0 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); box-shadow: 0 40px 120px rgba(0,0,0,.6); }
+  .shot img { display: block; width: 100%; height: auto; }
+
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .16em; color: var(--muted); margin: 0 0 26px; font-weight: 500; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 20px; }
+  .card h3 { margin: 0 0 8px; font-size: 15px; }
+  .card h3 span { color: var(--accent); }
+  .card p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .shots figure { margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+  .shots img { display: block; width: 100%; }
+  .shots figcaption { padding: 10px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td:first-child { white-space: nowrap; color: var(--text); }
+  td:last-child { color: var(--muted); }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; background: #15181e; border-radius: 5px; padding: 1px 6px; font-size: 12px; color: var(--text); }
+
+  footer { border-top: 1px solid var(--line); padding: 34px 0 60px; color: var(--muted); font-size: 12.5px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  @media (max-width: 760px) { .shots { grid-template-columns: 1fr; } .hero { padding-top: 48px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand"><span>◆</span> opencode-file-browser</div>
+    <nav>
+      <a href="#features">features</a>
+      <a href="#shots">screenshots</a>
+      <a href="#keys">keys</a>
+      <a href="https://github.com/arthurrogado/opencode-file-browser">github</a>
+      <a href="https://www.npmjs.com/package/opencode-file-browser">npm</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero" style="border-top:0">
+    <div class="badge">v1.0.0 · <b>MIT</b> · OpenCode 2.2.x</div>
+    <h1>Files, editing and git<br><em>inside the TUI.</em></h1>
+    <p class="sub">A file explorer, editor and review panel for OpenCode. Tabs, line numbers,
+      syntax colours, diffs and commits without leaving the session — and a simple mode
+      that keeps the original list + preview browser.</p>
+    <div class="install">
+      <code id="cmd">opencode plugin add <b>opencode-file-browser@latest</b></code>
+      <button id="copy">copy</button>
+    </div>
+    <p class="meta">then restart OpenCode, or run <a href="https://github.com/arthurrogado/opencode-file-browser">/reload</a>.</p>
+    <div class="shot"><img src="screenshots/editor.png" alt="OpenCode file browser editor with tabs, line numbers, syntax colours and the git changes panel"></div>
+  </section>
+
+  <section id="features">
+    <h2>Features</h2>
+    <div class="grid">
+      <div class="card"><h3><span>◆</span> Explorer</h3><p>Expand folders in place or navigate into them. Search by name or content, toggle dotfiles, see the branch and the number of changes.</p></div>
+      <div class="card"><h3><span>◆</span> Editor</h3><p>Real editing in the host textarea: tabs, line numbers, syntax colours, Enter for a new line, Ctrl+F in the file, Ctrl+S to save, scrollbar and click-to-place cursor.</p></div>
+      <div class="card"><h3><span>◆</span> Changes</h3><p>Stage, unstage, discard, commit, pull, push, branches and history. Enter opens a unified diff; F4 jumps to the real file.</p></div>
+      <div class="card"><h3><span>◆</span> Preferences</h3><p>F2 opens a modal with simple mode, line numbers, wrap, folder behaviour, panel preview, hidden files, mouse, search target and case sensitivity.</p></div>
+      <div class="card"><h3><span>◆</span> Big files</h3><p>The first 2 000 lines are rendered. Huge logs show a metadata placeholder instead of freezing the terminal.</p></div>
+      <div class="card"><h3><span>◆</span> Keyboard and mouse</h3><p>Everything reachable from the keyboard, everything available in the command palette. Click, wheel, drag the divider, right click for actions.</p></div>
+    </div>
+  </section>
+
+  <section id="shots">
+    <h2>Screenshots</h2>
+    <div class="shots">
+      <figure><img src="screenshots/diff.png" alt="Unified diff of a changed file"><figcaption>Enter on a change opens its unified diff.</figcaption></figure>
+      <figure><img src="screenshots/search.png" alt="Content search results"><figcaption>Search names or text inside the project.</figcaption></figure>
+      <figure><img src="screenshots/settings.png" alt="Preferences modal"><figcaption>F2: preferences, including simple mode.</figcaption></figure>
+      <figure><img src="screenshots/editor.png" alt="Editor, tabs and changes panel"><figcaption>Tabs, colours, line numbers and the changes panel.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="keys">
+    <h2>Keys</h2>
+    <table>
+      <tr><th>Key</th><th>Action</th></tr>
+      <tr><td><kbd>Ctrl+X F</kbd></td><td>open or close the browser</td></tr>
+      <tr><td><kbd>Ctrl+X O</kbd></td><td>open a file by path</td></tr>
+      <tr><td><kbd>↑ ↓</kbd> <kbd>j k</kbd></td><td>move in the list</td></tr>
+      <tr><td><kbd>→</kbd> / <kbd>Enter</kbd></td><td>open a file or expand a folder</td></tr>
+      <tr><td><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd></td><td>cycle panes / back to the explorer</td></tr>
+      <tr><td><kbd>Ctrl+F</kbd> / <kbd>Ctrl+E</kbd></td><td>search / switch name ↔ content</td></tr>
+      <tr><td><kbd>e</kbd> / <kbd>F4</kbd></td><td>preview ↔ editor</td></tr>
+      <tr><td><kbd>Ctrl+S</kbd> / <kbd>Ctrl+W</kbd></td><td>save / close tab</td></tr>
+      <tr><td><kbd>F1</kbd> / <kbd>F2</kbd> / <kbd>F3</kbd></td><td>shortcuts / preferences / changes</td></tr>
+      <tr><td><kbd>F10</kbd></td><td>item actions (new, rename, delete, close tabs)</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>leave editor → clear search → close</td></tr>
+    </table>
+  </section>
+</main>
+
+<footer class="wrap">
+  <span>MIT · built for OpenCode 2.2.x</span>
+  <span><a href="https://github.com/arthurrogado/opencode-file-browser">GitHub</a> · <a href="https://www.npmjs.com/package/opencode-file-browser">npm</a> · <a href="https://github.com/arthurrogado/opencode-file-browser/issues">issues</a></span>
+</footer>
+
+<script>
+  document.getElementById('copy').addEventListener('click', async () => {
+    const text = 'opencode plugin add opencode-file-browser@latest'
+    try { await navigator.clipboard.writeText(text) } catch { }
+    const button = document.getElementById('copy')
+    button.textContent = 'copied'
+    setTimeout(() => (button.textContent = 'copy'), 1400)
+  })
+</script>
+</body>
+</html>

@@ -126,6 +126,7 @@ export function EditorView(props) {
   let highlightTypeId;
   let highlightTimer;
   let mounted = true;
+  const mountedAt = Date.now();
   const [cursor, setCursor] = createSignal({
     line: 1,
     column: 1
@@ -537,6 +538,13 @@ export function EditorView(props) {
             syncViewport();
           });
           _$setProp(_el$24, "onKeyDown", event => {
+            // A key that opened this document can still be dispatched after
+            // the textarea mounts; don't let it land in the buffer.
+            if (Date.now() - mountedAt < 120) {
+              event.preventDefault?.();
+              event.stopPropagation?.();
+              return;
+            }
             const key = String(event.name ?? event.key ?? "").toLowerCase();
             const ctrl = !!(event.ctrl || event.meta);
             if (key === "return") {

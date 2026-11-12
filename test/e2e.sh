@@ -80,6 +80,8 @@ printf 'export const greeting = "Hello"\nexport function add(a: number, b: numbe
 printf '# Demo\n\nSome text here.\n' > "$FIX/README.md"
 printf 'needle in a haystack\n' > "$FIX/src/util.ts"
 printf 'NEEDLE in caps\n' > "$FIX/src/caps.ts"
+printf 'secret notes\n' > "$FIX/.secret.md"
+printf 'spaced out\n' > "$FIX/space name.md"
 seq -f "row %06g" 1 200000 > "$FIX/big.log"
 git -C "$FIX" init -q
 git -C "$FIX" config user.email e2e@example.com
@@ -154,6 +156,33 @@ sleep 0.8
 expect "typing works after the preferences dialog" "S"
 send C-s
 sleep 1
+
+say "== line numbers preference persists"
+send Escape
+sleep 0.4
+send F2
+wait_for "Preferences" 30 || true
+sleep 0.4
+send Home
+send Down
+sleep 0.2
+send Space
+sleep 0.6
+send Escape
+sleep 1
+send Escape
+sleep 0.4
+send Escape
+sleep 0.4
+send C-x f
+sleep 2
+refute "line numbers disabled" "  1 export const greeting"
+send F2
+wait_for "Preferences" 30 || true
+send r
+sleep 0.5
+send Escape
+sleep 0.9
 
 say "== tabs survive closing and reopening the browser"
 send Escape

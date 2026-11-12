@@ -28,7 +28,7 @@
     "type": "git",
     "url": "git+https://github.com/arthurrogado/opencode-file-browser.git"
   },
-  "homepage": "https://github.com/arthurrogado/opencode-file-browser#readme",
+  "homepage": "https://arthurrogado.github.io/opencode-file-browser/",
   "bugs": {
     "url": "https://github.com/arthurrogado/opencode-file-browser/issues"
   },
@@ -54,6 +54,7 @@
   "scripts": {
     "bundle": "node build.mjs",
     "build": "node build.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run bundle"
   }
 }
