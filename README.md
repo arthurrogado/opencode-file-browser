@@ -88,7 +88,7 @@ scroll, drag the divider to resize, right click for actions.
 ## Development
 
 ```sh
-npm install
+npm run setup         # build/test tooling only (not shipped in the package)
 npm run typecheck
 npm run bundle        # src/**/*.tsx -> dist/**/*.js
 ./test/e2e.sh         # 32 assertions in a real TUI (tmux + git fixture)

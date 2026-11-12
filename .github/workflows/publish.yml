@@ -18,7 +18,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest
-      - run: npm install --legacy-peer-deps --ignore-scripts
+      - run: npm run setup
       - run: npm run typecheck
       - run: npm run bundle
       - run: npm publish --access public
