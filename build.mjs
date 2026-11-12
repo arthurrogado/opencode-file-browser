@@ -1,7 +1,7 @@
 import { transformAsync } from "@babel/core"
 import ts from "@babel/preset-typescript"
 import solid from "babel-preset-solid"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 async function sources(dir) {
@@ -32,6 +32,11 @@ for (const file of files) {
   if (!result?.code) throw new Error(`Babel produced no output for ${file}`)
   const output = path.join("dist", path.relative("src", file)).replace(/\.tsx?$/, ".js")
   await mkdir(path.dirname(output), { recursive: true })
-  await writeFile(output, result.code)
+  // Write-then-rename: the host watches the plugin directory and can reconcile
+  // at any moment. A half-written module makes that reconciliation fail and
+  // leaves the plugin's keymaps dead until the TUI restarts.
+  const temporary = `${output}.${process.pid}.tmp`
+  await writeFile(temporary, result.code)
+  await rename(temporary, output)
   console.log(`built ${output}`)
 }

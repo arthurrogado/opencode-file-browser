@@ -55,11 +55,11 @@ const parseGrep = (stdout: string): { hits: ContentHit[]; truncated: boolean } =
  * Content search that prefers `git grep` (respects .gitignore, fast on big
  * repos) and falls back to plain grep outside a repository.
  */
-export async function searchContent(root: string, query: string): Promise<ContentSearch> {
+export async function searchContent(root: string, query: string, caseSensitive = false): Promise<ContentSearch> {
   const value = query.trim()
   if (value.length < 2) return { hits: [], truncated: false }
 
-  const git = await run("git", ["grep", "--untracked", "-n", "-I", "--no-color", "-e", value], root)
+  const git = await run("git", ["grep", "--untracked", "-n", "-I", "--no-color", ...(caseSensitive ? [] : ["-i"]), "-e", value], root)
   if (git.ok || (!git.ok && git.stdout)) {
     const parsed = parseGrep(git.stdout)
     return { hits: parsed.hits, truncated: parsed.truncated }
@@ -74,6 +74,7 @@ export async function searchContent(root: string, query: string): Promise<Conten
       "--exclude-dir=.git",
       "--exclude-dir=dist",
       "--exclude-dir=build",
+      ...(caseSensitive ? [] : ["-i"]),
       "-e",
       value,
       ".",

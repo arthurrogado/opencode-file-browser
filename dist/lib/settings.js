@@ -2,24 +2,30 @@ export const DEFAULTS = {
   simple: false,
   lineNumbers: true,
   wrap: false,
-  tree: "collapsed",
+  tree: "expand",
   panelPreview: true,
   changes: true,
   hidden: false,
   mouse: true,
   search: "name",
-  confirmDiscard: true,
-  tabWidth: 2
+  caseSensitive: false,
+  confirmDiscard: true
 };
 export function useSettings(context) {
   const [store, update] = context.storage.store("settings", {
     initial: DEFAULTS
   });
-  return {
-    value: () => ({
+  const value = () => {
+    const merged = {
       ...DEFAULTS,
       ...store
-    }),
+    };
+    // Older builds stored `collapsed` / `all`; keep those users working.
+    if (merged.tree === "collapsed" || merged.tree === "all") merged.tree = "expand";
+    return merged;
+  };
+  return {
+    value,
     update,
     reset: () => update(draft => {
       Object.assign(draft, DEFAULTS);

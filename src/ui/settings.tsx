@@ -15,12 +15,13 @@ const ROWS: readonly Row[] = [
   { key: "simple", label: "Simple mode", hint: "classic list + preview only", kind: "toggle" },
   { key: "lineNumbers", label: "Line numbers", hint: "gutter in viewer and editor", kind: "toggle" },
   { key: "wrap", label: "Wrap lines", hint: "wrap while editing", kind: "toggle" },
-  { key: "tree", label: "Folders", hint: "collapsed or full tree", kind: "choice", values: ["collapsed", "all"] },
+  { key: "tree", label: "Folders", hint: "expand in place or navigate into", kind: "choice", values: ["expand", "navigate"] },
   { key: "panelPreview", label: "Panel preview", hint: "preview in session panel", kind: "toggle" },
   { key: "changes", label: "Changes panel", hint: "git stage, commit, push", kind: "toggle" },
   { key: "hidden", label: "Hidden files", hint: "list dotfiles", kind: "toggle" },
   { key: "mouse", label: "Mouse", hint: "click, scroll and drag", kind: "toggle" },
   { key: "search", label: "Search", hint: "default search target", kind: "choice", values: ["name", "content"] },
+  { key: "caseSensitive", label: "Case sensitive", hint: "match case in searches", kind: "toggle" },
   { key: "confirmDiscard", label: "Confirm discard", hint: "ask before discarding", kind: "toggle" },
 ]
 
@@ -53,7 +54,7 @@ export function SettingsDialog(props: {
     const at = values.indexOf(String(current))
     const target = values[(at + direction + values.length) % values.length]
     set((next) => {
-      ;(next as any)[row.key] = row.key === "tabWidth" ? Number(target) : target
+      ;(next as any)[row.key] = target
     })
   }
 

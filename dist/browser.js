@@ -9,16 +9,52 @@ import { createElement as _$createElement } from "@opentui/solid";
 import { createComponent as _$createComponent } from "@opentui/solid";
 import { MouseButton, SyntaxStyle, TextAttributes } from "@opentui/core";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { ErrorBoundary, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { ErrorBoundary, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import path from "node:path";
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { HEAVY_CHARS, HEAVY_LINES, MAX_CHARS, MAX_LINES, basename, clampLongLines, expandHome, filetype, formatBytes, isBinary, isMarkdown, message } from "./lib/util.js";
+import { mkdir, readFile, rename as renameFile, rm, stat, writeFile } from "node:fs/promises";
+import { HEAVY_CHARS, HEAVY_LINES, MAX_CHARS, MAX_LINES, OVERSIZE_BYTES, OVERSIZE_LINES, basename, clampLongLines, expandHome, filetype, formatBytes, isBinary, isMarkdown, message, parentOf } from "./lib/util.js";
 import { useSettings } from "./lib/settings.js";
 import { searchContent } from "./lib/search.js";
 import * as git from "./lib/git.js";
 import { EditorView, isDirty } from "./ui/editor.js";
 import { SettingsDialog } from "./ui/settings.js";
 export const ROUTE = "file-browser";
+const [controller, setController] = createSignal();
+
+/**
+ * Keymap layers are registered once for the plugin lifetime. The route and the
+ * panel mount/unmount freely (and remount on host re-renders), so binding the
+ * layers to a component instance made them disappear under heavy files.
+ */
+export function registerBrowserLayers(context) {
+  context.keymap.layer(() => {
+    const current = controller();
+    return {
+      mode: "global",
+      priority: 105,
+      enabled: () => !!current && current.enabled(),
+      commands: current?.keys() ?? []
+    };
+  });
+  context.keymap.layer(() => {
+    const current = controller();
+    return {
+      mode: "global",
+      priority: 100,
+      enabled: () => !!current && current.enabled() && !current.typing(),
+      commands: current?.commands() ?? []
+    };
+  });
+  context.keymap.layer(() => {
+    const current = controller();
+    return {
+      mode: "global",
+      priority: 110,
+      enabled: () => !!current && current.changesEnabled(),
+      commands: current?.changes() ?? []
+    };
+  });
+}
 const iconFor = (row, theme) => {
   if (row.type === "directory") return {
     glyph: "▸",
@@ -84,6 +120,8 @@ export function Browser(props) {
   const [index, setIndex] = createSignal(0);
   const [dirs, setDirs] = createSignal({});
   const [expanded, setExpanded] = createSignal([]);
+  const [navRoot, setNavRoot] = createSignal("");
+  const [externalChange, setExternalChange] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal();
   const [query, setQuery] = createSignal("");
@@ -112,6 +150,34 @@ export function Browser(props) {
   const [splitWidth, setSplitWidth] = createSignal(0);
   let searchInput;
   let commitInput;
+  let editorApi;
+
+  // Tabs survive a trip to the chat: the panel unmounts when the session view
+  // takes over, so the documents live in the host's in-memory store.
+  const [stored, updateStored] = context.storage.memory("browser", {
+    initial: {}
+  });
+  const restored = {
+    ...stored
+  };
+  let persistTimer;
+  createEffect(() => {
+    const snapshot = {
+      root: props.location().directory,
+      docs: docs(),
+      active: active(),
+      modes: modes(),
+      previews: previews(),
+      navRoot: navRoot()
+    };
+    if (!snapshot.docs.length) return;
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      void updateStored(draft => {
+        Object.assign(draft, snapshot);
+      });
+    }, 250);
+  });
   const docked = () => props.panel !== undefined && props.panel.presentation === "panel";
   const simple = () => options().simple;
   const width = () => docked() ? props.panel?.width ?? dimensions().width : dimensions().width;
@@ -142,8 +208,11 @@ export function Browser(props) {
   // are not reliable when a panel remounts, and a stuck flag would swallow
   // every global key (escape included).
   const inputFocused = () => !!(searchInput && !searchInput.isDestroyed && searchInput.focused) || !!(commitInput && !commitInput.isDestroyed && commitInput.focused);
+  const navigate = () => options().tree === "navigate";
   const rows = createMemo(() => {
     const name = query().trim();
+    const fold = value => options().caseSensitive ? value : value.toLowerCase();
+    const needle = fold(name);
     if (name && searchMode() === "name") {
       if (name.length >= 2 && found().length > 0) {
         return found().map(value => ({
@@ -152,7 +221,7 @@ export function Browser(props) {
           depth: 0
         }));
       }
-      return flatten(dirs(), expanded()).filter(row => row.path.toLowerCase().includes(name.toLowerCase()));
+      return listing().filter(row => fold(row.path).includes(needle));
     }
     if (searchMode() === "content" && name.length >= 2) {
       return hits().map(hit => ({
@@ -163,8 +232,17 @@ export function Browser(props) {
         preview: hit.text
       }));
     }
-    return flatten(dirs(), expanded());
+    return listing();
   });
+  function listing() {
+    if (!navigate()) return flatten(dirs(), expanded());
+    const root = navRoot();
+    return (dirs()[root] ?? []).map(entry => ({
+      path: entry.path,
+      type: entry.type,
+      depth: 0
+    }));
+  }
   function flatten(cache, open, root = "", depth = 0, output = []) {
     const entries = cache[root];
     if (!entries) return output;
@@ -204,28 +282,22 @@ export function Browser(props) {
     setCache(target, items);
     return items;
   }
-  async function expandAll() {
+  async function enterDirectory(target) {
+    setNavRoot(target);
     setLoading(true);
     try {
-      const open = [];
-      const queue = [["", 0]];
-      let directoryCount = 0;
-      while (queue.length && directoryCount < 200) {
-        const [current, depth] = queue.shift();
-        const items = dirs()[current] ?? (await loadDirectory(current));
-        if (depth < 6) {
-          for (const item of items) {
-            if (item.type !== "directory") continue;
-            directoryCount++;
-            open.push(item.path);
-            queue.push([item.path, depth + 1]);
-          }
-        }
-      }
-      setExpanded(open);
+      if (!dirs()[target]) await loadDirectory(target);
+      setIndex(0);
+    } catch (cause) {
+      setStatus(`Could not open ${target}: ${message(cause)}`);
     } finally {
       setLoading(false);
     }
+  }
+  async function goUp() {
+    if (!navRoot()) return false;
+    await enterDirectory(parentOf(navRoot()));
+    return true;
   }
   async function toggleDirectory(row) {
     if (expanded().includes(row.path)) {
@@ -255,7 +327,7 @@ export function Browser(props) {
         await loadDirectory(directory).catch(() => undefined);
       }
       setExpanded(open);
-      if (options().tree === "all" && open.length === 0) await expandAll();
+      if (navigate() && navRoot()) await loadDirectory(navRoot()).catch(() => undefined);
     } catch (cause) {
       setError(message(cause));
     }
@@ -268,13 +340,37 @@ export function Browser(props) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     if (isBinary(data)) return {
       binary: true,
+      oversize: false,
       size: data.length
     };
     let text = new TextDecoder("utf-8").decode(data);
+    if (data.length > OVERSIZE_BYTES) {
+      const lines = (text.match(/\n/g)?.length ?? 0) + 1;
+      return {
+        binary: false,
+        oversize: true,
+        lines,
+        size: data.length
+      };
+    }
     let truncated = false;
-    const lines = text.split("\n");
-    if (lines.length > MAX_LINES) {
-      text = lines.slice(0, MAX_LINES).join("\n");
+    let lineCount = 0;
+    let cut = -1;
+    for (let index = 0; index < text.length; index++) {
+      if (text.charCodeAt(index) !== 10) continue;
+      lineCount++;
+      if (lineCount === MAX_LINES) cut = index;
+    }
+    if (lineCount + 1 > OVERSIZE_LINES) {
+      return {
+        binary: false,
+        oversize: true,
+        lines: lineCount + 1,
+        size: data.length
+      };
+    }
+    if (cut >= 0) {
+      text = text.slice(0, cut);
       truncated = true;
     }
     if (text.length > MAX_CHARS) {
@@ -284,9 +380,10 @@ export function Browser(props) {
     const clamped = clampLongLines(text);
     text = clamped.text;
     truncated = truncated || clamped.clipped;
-    const readOnly = data.length > HEAVY_CHARS || lines.length > HEAVY_LINES || truncated;
+    const readOnly = data.length > HEAVY_CHARS || lineCount > HEAVY_LINES || truncated;
     return {
       binary: false,
+      oversize: false,
       text,
       truncated,
       readOnly,
@@ -305,6 +402,33 @@ export function Browser(props) {
       const loaded = await loadFile(target, external);
       if (loaded.binary) {
         setStatus(`${basename(target)} is binary (${formatBytes(loaded.size)})`);
+        return;
+      }
+      if (loaded.oversize) {
+        const next = {
+          path: target,
+          external,
+          text: "",
+          original: "",
+          type: filetype(target),
+          markdown: false,
+          truncated: true,
+          readOnly: true,
+          oversize: true,
+          lines: loaded.lines
+        };
+        setDocs(list => [...list, next]);
+        setActive(docs().length - 1);
+        setModes(value => ({
+          ...value,
+          [target]: false
+        }));
+        setPreviews(value => ({
+          ...value,
+          [target]: false
+        }));
+        setFocus("editor");
+        setStatus(`${basename(target)} is too large to render (${loaded.lines ?? "many"} lines, ${formatBytes(loaded.size)})`);
         return;
       }
       const {
@@ -373,9 +497,56 @@ export function Browser(props) {
     }
     await openDoc(relative ?? target, relative === undefined);
   }
+  async function openDiff(change) {
+    const path = `diff:${change.path}`;
+    const existing = docs().findIndex(item => item.path === path);
+    if (existing >= 0) {
+      setActive(existing);
+      setFocus("editor");
+      return;
+    }
+    try {
+      let text = "";
+      if (change.status === "untracked") {
+        const content = await readFile(absolute(change.path), "utf8");
+        const lines = content.split("\n");
+        text = `--- /dev/null\n+++ b/${change.path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(line => `+${line}`).join("\n")}`;
+      } else {
+        const args = change.staged ? ["diff", "--cached", "--", change.path] : ["diff", "--", change.path];
+        const result = await git.git(props.location().directory, args);
+        text = result.stdout;
+      }
+      if (!text.trim()) text = "No textual changes.";
+      const next = {
+        path,
+        external: false,
+        text,
+        original: text,
+        type: filetype(change.path),
+        markdown: false,
+        truncated: false,
+        readOnly: true,
+        diff: true,
+        rawPath: change.path
+      };
+      setDocs(list => [...list, next]);
+      setActive(docs().length - 1);
+      setModes(value => ({
+        ...value,
+        [path]: false
+      }));
+      setPreviews(value => ({
+        ...value,
+        [path]: false
+      }));
+      setFocus("editor");
+    } catch (cause) {
+      setStatus(`Could not diff ${change.path}: ${message(cause)}`);
+    }
+  }
   async function openRow(row) {
     if (row.type === "directory") {
-      await toggleDirectory(row);
+      if (navigate()) await enterDirectory(row.path);else await toggleDirectory(row);
       return;
     }
     if (row.type === "hit") {
@@ -387,11 +558,12 @@ export function Browser(props) {
   function closeDoc(at) {
     const target = docs()[at];
     if (!target) return;
-    const drop = () => setDocs(list => {
-      const next = list.filter((_, position) => position !== at);
-      setActive(value => Math.max(0, Math.min(next.length - 1, value >= at ? value - 1 : value)));
-      return next;
-    });
+    const drop = () => {
+      const next = docs().filter((_, position) => position !== at);
+      const nextActive = Math.max(0, Math.min(next.length - 1, active() >= at ? active() - 1 : active()));
+      setDocs(next);
+      setActive(nextActive);
+    };
     if (!isDirty(target)) {
       drop();
       return;
@@ -557,6 +729,10 @@ export function Browser(props) {
   function toggleEdit() {
     const current = doc();
     if (!current) return;
+    if (current.diff) {
+      if (current.rawPath) void openDoc(current.rawPath, false);
+      return;
+    }
     if (current.readOnly) {
       setStatus("Large file: read-only preview.");
       return;
@@ -627,7 +803,7 @@ export function Browser(props) {
           query: value.trim(),
           limit: 200
         });
-        setFound(result.data.filter(entry => entry.type === "file").map(entry => entry.path));
+        setFound(result.data.filter(entry => entry.type === "file").filter(entry => !options().caseSensitive || entry.path.includes(value.trim())).map(entry => entry.path));
       } catch {
         setFound([]);
       }
@@ -639,7 +815,7 @@ export function Browser(props) {
     }
     setSearching(true);
     try {
-      const result = await searchContent(props.location().directory, value);
+      const result = await searchContent(props.location().directory, value, options().caseSensitive);
       if (value !== query()) return;
       setHits([...result.hits]);
       setHitsTruncated(result.truncated);
@@ -837,6 +1013,151 @@ export function Browser(props) {
     keys: "h",
     title: "Toggle hidden files"
   }];
+  const absolute = relative => path.join(props.location().directory, relative);
+  async function refreshDirectory(relative) {
+    await loadDirectory(relative).catch(() => undefined);
+    if (!navigate() && relative && !expanded().includes(relative)) setExpanded(open => [...open, relative]);
+  }
+  function dropDocs(predicate) {
+    const next = docs().filter(item => !predicate(item));
+    setDocs(next);
+    setActive(value => Math.max(0, Math.min(next.length - 1, value)));
+  }
+  async function closeMany(mode) {
+    const keep = mode === "others" ? docs()[active()] : undefined;
+    const targets = docs().filter(item => item !== keep);
+    if (!targets.length) return;
+    const dirty = targets.filter(isDirty);
+    if (dirty.length && options().confirmDiscard) {
+      const ok = await context.ui.dialog.confirm({
+        title: "Close tabs",
+        message: `${dirty.length} unsaved ${dirty.length === 1 ? "file" : "files"} will lose changes.`,
+        label: {
+          confirm: "Close",
+          cancel: "Cancel"
+        }
+      });
+      if (!ok) return;
+    }
+    setDocs(keep ? [keep] : []);
+    setActive(keep ? 0 : -1);
+  }
+  async function openContext(kind, target) {
+    const row = kind === "tree" ? target : undefined;
+    const tabDoc = kind === "tab" ? target ?? doc() : doc();
+    const base = row ? row.type === "directory" ? row.path : parentOf(row.path) : parentOf(tabDoc?.path ?? "");
+    const targetDoc = row && row.type !== "directory" ? docs().find(item => item.path === row.path) : tabDoc;
+    const treeOptions = [{
+      title: "New file…",
+      value: "new-file"
+    }, {
+      title: "New folder…",
+      value: "new-folder"
+    }, {
+      title: "Rename…",
+      value: "rename",
+      disabled: !row
+    }, {
+      title: "Delete…",
+      value: "delete",
+      disabled: !row
+    }, {
+      title: `Close tab${targetDoc ? ` (${basename(targetDoc.path)})` : ""}`,
+      value: "close-tab",
+      disabled: !targetDoc
+    }, {
+      title: "Close other tabs",
+      value: "close-others"
+    }, {
+      title: "Close all tabs",
+      value: "close-all"
+    }];
+    const tabOptions = [{
+      title: `Close (${tabDoc ? basename(tabDoc.path) : "tab"})`,
+      value: "close-tab"
+    }, {
+      title: "Close other tabs",
+      value: "close-others"
+    }, {
+      title: "Close all tabs",
+      value: "close-all"
+    }];
+    const choice = await context.ui.dialog.select({
+      title: kind === "tree" ? `Actions · ${row ? basename(row.path) : "project"}` : "Tab actions",
+      options: kind === "tree" ? treeOptions : tabOptions
+    });
+    if (!choice) return;
+    if (choice === "close-tab") {
+      const at = targetDoc ? docs().findIndex(item => item.path === targetDoc.path && item.external === targetDoc.external) : active();
+      if (at >= 0) closeDoc(at);
+      return;
+    }
+    if (choice === "close-others") return closeMany("others");
+    if (choice === "close-all") return closeMany("all");
+    if (choice === "new-file" || choice === "new-folder") {
+      const name = await context.ui.dialog.prompt({
+        title: choice === "new-file" ? "New file" : "New folder",
+        description: base ? `inside ${base}/` : "inside the project root",
+        placeholder: choice === "new-file" ? "notes.md" : "folder"
+      });
+      const clean = name?.trim().replace(/^\.?\//, "");
+      if (!clean) return;
+      const relative = base ? `${base}/${clean}` : clean;
+      try {
+        if (choice === "new-file") await writeFile(absolute(relative), "");else await mkdir(absolute(relative), {
+          recursive: true
+        });
+        await refreshDirectory(base);
+        setStatus(`Created ${relative}`);
+        if (choice === "new-file") await openDoc(relative, false);
+      } catch (cause) {
+        setStatus(`Could not create ${relative}: ${message(cause)}`);
+      }
+      return;
+    }
+    if (!row) return;
+    if (choice === "rename") {
+      const name = await context.ui.dialog.prompt({
+        title: "Rename",
+        value: basename(row.path),
+        description: row.path
+      });
+      const clean = name?.trim();
+      if (!clean || clean === basename(row.path)) return;
+      const next = parentOf(row.path) ? `${parentOf(row.path)}/${clean}` : clean;
+      try {
+        await renameFile(absolute(row.path), absolute(next));
+        dropDocs(item => item.path === row.path || item.path.startsWith(`${row.path}/`));
+        await refreshDirectory(parentOf(row.path));
+        setStatus(`Renamed to ${next}`);
+      } catch (cause) {
+        setStatus(`Rename failed: ${message(cause)}`);
+      }
+      return;
+    }
+    if (choice === "delete") {
+      const ok = await context.ui.dialog.confirm({
+        title: "Delete",
+        message: `Delete ${row.path}${row.type === "directory" ? " and everything inside it" : ""}?`,
+        label: {
+          confirm: "Delete",
+          cancel: "Cancel"
+        }
+      });
+      if (!ok) return;
+      try {
+        await rm(absolute(row.path), {
+          recursive: true,
+          force: true
+        });
+        dropDocs(item => item.path === row.path || item.path.startsWith(`${row.path}/`) || item.rawPath === row.path);
+        await refreshDirectory(parentOf(row.path));
+        setStatus(`Deleted ${row.path}`);
+      } catch (cause) {
+        setStatus(`Delete failed: ${message(cause)}`);
+      }
+    }
+  }
   const commands = [{
     id: "file-browser.escape",
     title: "Leave editor / clear search / close",
@@ -905,6 +1226,10 @@ export function Browser(props) {
     bind: "left,backspace",
     enabled: () => !inputFocused() && !composing(),
     run: () => {
+      if (navigate()) {
+        if (navRoot()) void goUp();
+        return;
+      }
       const row = currentRow();
       if (row?.type === "directory" && expanded().includes(row.path)) void toggleDirectory(row);
     }
@@ -1058,6 +1383,16 @@ export function Browser(props) {
     }
   }];
   const changesCommands = [{
+    id: "file-browser.git.open",
+    title: "Open the diff for this change",
+    group: "Git",
+    bind: "return,space",
+    enabled: () => !composing() && focus() === "changes",
+    run: () => {
+      const change = gitState().changes[changeIndex()];
+      if (change) void openDiff(change);
+    }
+  }, {
     id: "file-browser.git.stage",
     title: "Stage change",
     group: "Git",
@@ -1128,49 +1463,86 @@ export function Browser(props) {
     enabled: () => !composing() && focus() === "changes",
     run: () => void refreshGit()
   }];
-  context.keymap.layer(() => ({
-    priority: 105,
+  const keyCommands = [{
+    id: "file-browser.keys.help",
+    title: "Keyboard shortcuts",
+    group: "Files",
+    bind: "f1",
+    run: showHelp
+  }, {
+    id: "file-browser.keys.settings",
+    title: "Preferences",
+    group: "Files",
+    bind: "f2",
+    run: openSettings
+  }, {
+    id: "file-browser.keys.changes",
+    title: "Focus changes",
+    group: "Git",
+    bind: "f3",
+    enabled: () => showChanges(),
+    run: () => {
+      setFocus("changes");
+      void refreshGit();
+    }
+  }, {
+    id: "file-browser.keys.edit",
+    title: "Toggle preview/editor",
+    group: "Files",
+    bind: "f4",
+    run: toggleEdit
+  }, {
+    id: "file-browser.keys.explorer",
+    title: "Focus the explorer",
+    group: "Files",
+    bind: "shift+tab",
+    enabled: () => !composing(),
+    run: () => setFocus("explorer")
+  }, {
+    id: "file-browser.keys.actions",
+    title: "Item actions (new, rename, delete, close tabs)",
+    group: "Files",
+    bind: "f10",
+    run: () => {
+      if (focus() === "changes") return;
+      if (focus() === "editor" && doc()) void openContext("tab", doc());else void openContext("tree", currentRow());
+    }
+  }, {
+    id: "file-browser.keys.refresh",
+    title: "Refresh",
+    group: "Files",
+    bind: "f5",
+    run: () => void refresh()
+  }, {
+    id: "file-browser.keys.changes2",
+    title: "Focus changes",
+    group: "Git",
+    bind: "ctrl+g",
+    enabled: () => showChanges(),
+    run: () => {
+      setFocus("changes");
+      void refreshGit();
+    }
+  }, {
+    id: "file-browser.keys.newline",
+    title: "Insert a new line in the editor",
+    group: "Files",
+    bind: "return,shift+return",
+    enabled: () => typing(),
+    run: () => editorApi?.newline()
+  }];
+  const instance = {
+    commands: () => commands,
+    changes: () => changesCommands,
+    keys: () => keyCommands,
     enabled: () => props.panel ? props.panel.focused : true,
-    commands: [{
-      id: "file-browser.keys.help",
-      title: "Keyboard shortcuts",
-      group: "Files",
-      bind: "f1",
-      run: showHelp
-    }, {
-      id: "file-browser.keys.settings",
-      title: "Preferences",
-      group: "Files",
-      bind: "f2",
-      run: openSettings
-    }, {
-      id: "file-browser.keys.changes",
-      title: "Focus changes",
-      group: "Git",
-      bind: "f3",
-      enabled: () => showChanges(),
-      run: () => {
-        setFocus("changes");
-        void refreshGit();
-      }
-    }, {
-      id: "file-browser.keys.edit",
-      title: "Toggle preview/editor",
-      group: "Files",
-      bind: "f4",
-      run: toggleEdit
-    }]
-  }));
-  context.keymap.layer(() => ({
-    priority: 100,
-    enabled: () => (props.panel ? props.panel.focused : true) && !typing(),
-    commands
-  }));
-  context.keymap.layer(() => ({
-    priority: 110,
-    enabled: () => (props.panel ? props.panel.focused : true) && !composing() && focus() === "changes" && !typing(),
-    commands: changesCommands
-  }));
+    changesEnabled: () => (props.panel ? props.panel.focused : true) && !composing() && focus() === "changes" && !typing(),
+    typing: () => typing()
+  };
+  setController(instance);
+  onCleanup(() => {
+    if (controller() === instance) setController(undefined);
+  });
   async function promptPath() {
     const value = await context.ui.dialog.prompt({
       title: "Open file by path",
@@ -1219,15 +1591,27 @@ export function Browser(props) {
   async function refresh() {
     const current = doc();
     if (current && isDirty(current)) {
-      setStatus("Save or discard your edits before reloading.");
-      await refreshGit();
-      return;
+      if (!externalChange()) {
+        setStatus("Save or discard your edits before reloading.");
+        await refreshGit();
+        return;
+      }
+      const ok = await context.ui.dialog.confirm({
+        title: "Reload from disk",
+        message: "Your unsaved edits will be discarded.",
+        label: {
+          confirm: "Reload",
+          cancel: "Cancel"
+        }
+      });
+      if (!ok) return;
     }
+    setExternalChange(false);
     await refreshTree();
     if (current) {
       try {
         const loaded = await loadFile(current.path, current.external);
-        if (!loaded.binary) {
+        if (!loaded.binary && !loaded.oversize) {
           setDocs(list => list.map(item => item.path === current.path && item.external === current.external ? {
             ...item,
             text: loaded.text,
@@ -1314,27 +1698,35 @@ export function Browser(props) {
     const root = props.location().directory;
     if (root === lastRoot) return;
     lastRoot = root;
-    setDocs([]);
-    setActive(-1);
     setStatus(undefined);
     setQuery("");
     setHits([]);
     setFound([]);
-    void refreshTree();
-    void refreshGit();
-  });
-  onMount(() => {
+    if (restored.root === root && restored.docs?.length) {
+      setDocs(restored.docs);
+      setActive(Math.min(restored.active ?? 0, restored.docs.length - 1));
+      setModes(restored.modes ?? {});
+      setPreviews(restored.previews ?? {});
+      setNavRoot(restored.navRoot ?? "");
+    } else {
+      setDocs([]);
+      setActive(-1);
+      setNavRoot("");
+    }
     void refreshTree();
     void refreshGit();
   });
 
-  // Changing the Folders preference should take effect without reopening.
+  // Switching between in-place expansion and navigate mode starts from the
+  // project root so the list never shows stale rows.
   let lastTree;
   createEffect(() => {
     const mode = options().tree;
     if (mode === lastTree) return;
     lastTree = mode;
-    if (mode === "all") void expandAll();else collapseAll();
+    setNavRoot("");
+    setExpanded([]);
+    setIndex(0);
   });
 
   // Keep focus on a pane that exists when simple mode hides the git panel.
@@ -1364,7 +1756,7 @@ export function Browser(props) {
     return `${rows().filter(row => row.depth === 0).length} items`;
   };
   const branch = () => gitState().repo ? gitState().branch : "";
-  const tabLabel = item => `${isDirty(item) ? "● " : ""}${basename(item.path)}`;
+  const tabLabel = item => `${isDirty(item) ? "● " : ""}${item.diff ? "Δ " : ""}${basename(item.rawPath ?? item.path)}`;
   const Tab = tabProps => {
     const [hovered, setHovered] = createSignal(false);
     return (() => {
@@ -1381,6 +1773,12 @@ export function Browser(props) {
       _$setProp(_el$1, "onMouseOut", () => setHovered(false));
       _$setProp(_el$1, "onMouseUp", event => {
         if (!options().mouse) return;
+        if (event.button === MouseButton.RIGHT) {
+          event.stopPropagation();
+          setActive(tabProps.position);
+          void openContext("tab", tabProps.item);
+          return;
+        }
         if (event.button === MouseButton.MIDDLE) {
           event.stopPropagation();
           closeDoc(tabProps.position);
@@ -1437,7 +1835,15 @@ export function Browser(props) {
       _$setProp(_el$13, "onMouseOver", () => setHovered(true));
       _$setProp(_el$13, "onMouseOut", () => setHovered(false));
       _$setProp(_el$13, "onMouseUp", event => {
-        if (!options().mouse || event.button !== MouseButton.LEFT) return;
+        if (!options().mouse) return;
+        if (event.button === MouseButton.RIGHT) {
+          event.stopPropagation();
+          setFocus("explorer");
+          setIndex(rowProps.position);
+          void openContext("tree", rowProps.row);
+          return;
+        }
+        if (event.button !== MouseButton.LEFT) return;
         event.stopPropagation();
         setFocus("explorer");
         setIndex(rowProps.position);
@@ -1513,7 +1919,7 @@ export function Browser(props) {
       event.stopPropagation();
       setFocus("changes");
       setChangeIndex(changeProps.position);
-      void openDoc(changeProps.change.path, false);
+      void openDiff(changeProps.change);
     });
     _$insertNode(_el$19, _el$20);
     _$setProp(_el$19, "wrapMode", "none");
@@ -1568,12 +1974,12 @@ export function Browser(props) {
       _el$40 = _$createElement("box"),
       _el$41 = _$createElement("input"),
       _el$42 = _$createElement("scrollbox"),
-      _el$75 = _$createElement("box"),
-      _el$76 = _$createElement("text"),
-      _el$77 = _$createElement("text");
+      _el$77 = _$createElement("box"),
+      _el$78 = _$createElement("text"),
+      _el$79 = _$createElement("text");
     _$insertNode(_el$24, _el$25);
     _$insertNode(_el$24, _el$31);
-    _$insertNode(_el$24, _el$75);
+    _$insertNode(_el$24, _el$77);
     _$setProp(_el$24, "width", "100%");
     _$setProp(_el$24, "height", "100%");
     _$setProp(_el$24, "flexDirection", "column");
@@ -1591,7 +1997,11 @@ export function Browser(props) {
     _$setProp(_el$28, "truncate", true);
     _$setProp(_el$28, "flexGrow", 1);
     _$setProp(_el$28, "minWidth", 0);
-    _$insert(_el$28, () => context.ui.format.path(props.location().directory));
+    _$insert(_el$28, () => context.ui.format.path(props.location().directory), null);
+    _$insert(_el$28, (() => {
+      var _c$3 = _$memo(() => !!navRoot());
+      return () => _c$3() ? `/${navRoot()}` : "";
+    })(), null);
     _$insert(_el$25, _$createComponent(Show, {
       get when() {
         return branch();
@@ -1753,8 +2163,8 @@ export function Browser(props) {
         _$setProp(_el$47, "truncate", true);
         _$setProp(_el$47, "flexGrow", 1);
         _$insert(_el$47, (() => {
-          var _c$3 = _$memo(() => !!gitState().repo);
-          return () => _c$3() ? `±${gitState().changes.length} changes` : "no repository";
+          var _c$4 = _$memo(() => !!gitState().repo);
+          return () => _c$4() ? `±${gitState().changes.length} changes` : "no repository";
         })());
         _$insertNode(_el$48, _$createTextNode(`ctrl+e`));
         _$setProp(_el$48, "wrapMode", "none");
@@ -1818,155 +2228,155 @@ export function Browser(props) {
           keyed: true,
           get fallback() {
             return (() => {
-              var _el$80 = _$createElement("box"),
-                _el$81 = _$createElement("text"),
-                _el$82 = _$createElement("text");
-              _$insertNode(_el$80, _el$81);
-              _$insertNode(_el$80, _el$82);
-              _$setProp(_el$80, "flexGrow", 1);
-              _$setProp(_el$80, "minHeight", 0);
-              _$setProp(_el$80, "flexDirection", "column");
-              _$setProp(_el$80, "alignItems", "center");
-              _$setProp(_el$80, "justifyContent", "center");
-              _$setProp(_el$80, "gap", 1);
-              _$insert(_el$81, () => simple() ? "File browser" : "OpenCode files");
-              _$insert(_el$82, () => simple() || docked() ? "Select a file on the left and press Enter." : "Browse, edit and review without leaving the TUI.");
-              _$insert(_el$80, _$createComponent(Show, {
+              var _el$82 = _$createElement("box"),
+                _el$83 = _$createElement("text"),
+                _el$84 = _$createElement("text");
+              _$insertNode(_el$82, _el$83);
+              _$insertNode(_el$82, _el$84);
+              _$setProp(_el$82, "flexGrow", 1);
+              _$setProp(_el$82, "minHeight", 0);
+              _$setProp(_el$82, "flexDirection", "column");
+              _$setProp(_el$82, "alignItems", "center");
+              _$setProp(_el$82, "justifyContent", "center");
+              _$setProp(_el$82, "gap", 1);
+              _$insert(_el$83, () => simple() ? "File browser" : "OpenCode files");
+              _$insert(_el$84, () => simple() || docked() ? "Select a file on the left and press Enter." : "Browse, edit and review without leaving the TUI.");
+              _$insert(_el$82, _$createComponent(Show, {
                 get when() {
                   return _$memo(() => !!docked())() && !simple();
                 },
                 get children() {
-                  var _el$83 = _$createElement("text");
-                  _$insertNode(_el$83, _$createTextNode(`tab pane · ctrl+f search · e edit · ctrl+s save`));
-                  _$setProp(_el$83, "wrapMode", "word");
-                  _$effect(_$p => _$setProp(_el$83, "fg", theme.text.muted, _$p));
-                  return _el$83;
+                  var _el$85 = _$createElement("text");
+                  _$insertNode(_el$85, _$createTextNode(`tab pane · ctrl+f search · e edit · ctrl+s save`));
+                  _$setProp(_el$85, "wrapMode", "word");
+                  _$effect(_$p => _$setProp(_el$85, "fg", theme.text.muted, _$p));
+                  return _el$85;
                 }
               }), null);
-              _$insert(_el$80, _$createComponent(Show, {
+              _$insert(_el$82, _$createComponent(Show, {
                 get when() {
                   return _$memo(() => !!!simple())() && !docked();
                 },
                 get children() {
-                  var _el$85 = _$createElement("box"),
-                    _el$86 = _$createElement("text"),
-                    _el$88 = _$createElement("box"),
-                    _el$89 = _$createElement("text"),
+                  var _el$87 = _$createElement("box"),
+                    _el$88 = _$createElement("text"),
+                    _el$90 = _$createElement("box"),
                     _el$91 = _$createElement("text"),
-                    _el$93 = _$createElement("box"),
-                    _el$94 = _$createElement("text"),
+                    _el$93 = _$createElement("text"),
+                    _el$95 = _$createElement("box"),
                     _el$96 = _$createElement("text"),
-                    _el$98 = _$createElement("box"),
-                    _el$99 = _$createElement("text"),
+                    _el$98 = _$createElement("text"),
+                    _el$100 = _$createElement("box"),
                     _el$101 = _$createElement("text"),
-                    _el$103 = _$createElement("box"),
-                    _el$104 = _$createElement("text"),
+                    _el$103 = _$createElement("text"),
+                    _el$105 = _$createElement("box"),
                     _el$106 = _$createElement("text"),
-                    _el$108 = _$createElement("box"),
-                    _el$109 = _$createElement("text"),
+                    _el$108 = _$createElement("text"),
+                    _el$110 = _$createElement("box"),
                     _el$111 = _$createElement("text"),
-                    _el$113 = _$createElement("box"),
-                    _el$114 = _$createElement("text"),
-                    _el$116 = _$createElement("text");
-                  _$insertNode(_el$85, _el$86);
-                  _$insertNode(_el$85, _el$88);
-                  _$insertNode(_el$85, _el$93);
-                  _$insertNode(_el$85, _el$98);
-                  _$insertNode(_el$85, _el$103);
-                  _$insertNode(_el$85, _el$108);
-                  _$insertNode(_el$85, _el$113);
-                  _$setProp(_el$85, "flexDirection", "column");
-                  _$setProp(_el$85, "gap", 1);
-                  _$setProp(_el$85, "paddingTop", 1);
-                  _$setProp(_el$85, "border", true);
-                  _$setProp(_el$85, "paddingLeft", 2);
-                  _$setProp(_el$85, "paddingRight", 2);
-                  _$insertNode(_el$86, _$createTextNode(`Quick start`));
-                  _$insertNode(_el$88, _el$89);
-                  _$insertNode(_el$88, _el$91);
-                  _$setProp(_el$88, "flexDirection", "row");
-                  _$setProp(_el$88, "gap", 2);
-                  _$insertNode(_el$89, _$createTextNode(`↑ ↓ enter`));
-                  _$setProp(_el$89, "wrapMode", "none");
-                  _$setProp(_el$89, "width", 18);
-                  _$insertNode(_el$91, _$createTextNode(`move and open`));
+                    _el$113 = _$createElement("text"),
+                    _el$115 = _$createElement("box"),
+                    _el$116 = _$createElement("text"),
+                    _el$118 = _$createElement("text");
+                  _$insertNode(_el$87, _el$88);
+                  _$insertNode(_el$87, _el$90);
+                  _$insertNode(_el$87, _el$95);
+                  _$insertNode(_el$87, _el$100);
+                  _$insertNode(_el$87, _el$105);
+                  _$insertNode(_el$87, _el$110);
+                  _$insertNode(_el$87, _el$115);
+                  _$setProp(_el$87, "flexDirection", "column");
+                  _$setProp(_el$87, "gap", 1);
+                  _$setProp(_el$87, "paddingTop", 1);
+                  _$setProp(_el$87, "border", true);
+                  _$setProp(_el$87, "paddingLeft", 2);
+                  _$setProp(_el$87, "paddingRight", 2);
+                  _$insertNode(_el$88, _$createTextNode(`Quick start`));
+                  _$insertNode(_el$90, _el$91);
+                  _$insertNode(_el$90, _el$93);
+                  _$setProp(_el$90, "flexDirection", "row");
+                  _$setProp(_el$90, "gap", 2);
+                  _$insertNode(_el$91, _$createTextNode(`↑ ↓ enter`));
                   _$setProp(_el$91, "wrapMode", "none");
-                  _$insertNode(_el$93, _el$94);
-                  _$insertNode(_el$93, _el$96);
-                  _$setProp(_el$93, "flexDirection", "row");
-                  _$setProp(_el$93, "gap", 2);
-                  _$insertNode(_el$94, _$createTextNode(`ctrl+f / ctrl+e`));
-                  _$setProp(_el$94, "wrapMode", "none");
-                  _$setProp(_el$94, "width", 18);
-                  _$insertNode(_el$96, _$createTextNode(`search names or content`));
+                  _$setProp(_el$91, "width", 18);
+                  _$insertNode(_el$93, _$createTextNode(`move and open`));
+                  _$setProp(_el$93, "wrapMode", "none");
+                  _$insertNode(_el$95, _el$96);
+                  _$insertNode(_el$95, _el$98);
+                  _$setProp(_el$95, "flexDirection", "row");
+                  _$setProp(_el$95, "gap", 2);
+                  _$insertNode(_el$96, _$createTextNode(`ctrl+f / ctrl+e`));
                   _$setProp(_el$96, "wrapMode", "none");
-                  _$insertNode(_el$98, _el$99);
-                  _$insertNode(_el$98, _el$101);
-                  _$setProp(_el$98, "flexDirection", "row");
-                  _$setProp(_el$98, "gap", 2);
-                  _$insertNode(_el$99, _$createTextNode(`e / ctrl+s`));
-                  _$setProp(_el$99, "wrapMode", "none");
-                  _$setProp(_el$99, "width", 18);
-                  _$insertNode(_el$101, _$createTextNode(`edit and save`));
+                  _$setProp(_el$96, "width", 18);
+                  _$insertNode(_el$98, _$createTextNode(`search names or content`));
+                  _$setProp(_el$98, "wrapMode", "none");
+                  _$insertNode(_el$100, _el$101);
+                  _$insertNode(_el$100, _el$103);
+                  _$setProp(_el$100, "flexDirection", "row");
+                  _$setProp(_el$100, "gap", 2);
+                  _$insertNode(_el$101, _$createTextNode(`e / ctrl+s`));
                   _$setProp(_el$101, "wrapMode", "none");
-                  _$insertNode(_el$103, _el$104);
-                  _$insertNode(_el$103, _el$106);
-                  _$setProp(_el$103, "flexDirection", "row");
-                  _$setProp(_el$103, "gap", 2);
-                  _$insertNode(_el$104, _$createTextNode(`ctrl+g`));
-                  _$setProp(_el$104, "wrapMode", "none");
-                  _$setProp(_el$104, "width", 18);
-                  _$insertNode(_el$106, _$createTextNode(`git changes, stage and commit`));
+                  _$setProp(_el$101, "width", 18);
+                  _$insertNode(_el$103, _$createTextNode(`edit and save`));
+                  _$setProp(_el$103, "wrapMode", "none");
+                  _$insertNode(_el$105, _el$106);
+                  _$insertNode(_el$105, _el$108);
+                  _$setProp(_el$105, "flexDirection", "row");
+                  _$setProp(_el$105, "gap", 2);
+                  _$insertNode(_el$106, _$createTextNode(`ctrl+g`));
                   _$setProp(_el$106, "wrapMode", "none");
-                  _$insertNode(_el$108, _el$109);
-                  _$insertNode(_el$108, _el$111);
-                  _$setProp(_el$108, "flexDirection", "row");
-                  _$setProp(_el$108, "gap", 2);
-                  _$insertNode(_el$109, _$createTextNode(`F2`));
-                  _$setProp(_el$109, "wrapMode", "none");
-                  _$setProp(_el$109, "width", 18);
-                  _$insertNode(_el$111, _$createTextNode(`preferences, including simple mode`));
+                  _$setProp(_el$106, "width", 18);
+                  _$insertNode(_el$108, _$createTextNode(`git changes, stage and commit`));
+                  _$setProp(_el$108, "wrapMode", "none");
+                  _$insertNode(_el$110, _el$111);
+                  _$insertNode(_el$110, _el$113);
+                  _$setProp(_el$110, "flexDirection", "row");
+                  _$setProp(_el$110, "gap", 2);
+                  _$insertNode(_el$111, _$createTextNode(`F2`));
                   _$setProp(_el$111, "wrapMode", "none");
-                  _$insertNode(_el$113, _el$114);
-                  _$insertNode(_el$113, _el$116);
-                  _$setProp(_el$113, "flexDirection", "row");
-                  _$setProp(_el$113, "gap", 2);
-                  _$insertNode(_el$114, _$createTextNode(`F1`));
-                  _$setProp(_el$114, "wrapMode", "none");
-                  _$setProp(_el$114, "width", 18);
-                  _$insertNode(_el$116, _$createTextNode(`every shortcut`));
+                  _$setProp(_el$111, "width", 18);
+                  _$insertNode(_el$113, _$createTextNode(`preferences, including simple mode`));
+                  _$setProp(_el$113, "wrapMode", "none");
+                  _$insertNode(_el$115, _el$116);
+                  _$insertNode(_el$115, _el$118);
+                  _$setProp(_el$115, "flexDirection", "row");
+                  _$setProp(_el$115, "gap", 2);
+                  _$insertNode(_el$116, _$createTextNode(`F1`));
                   _$setProp(_el$116, "wrapMode", "none");
+                  _$setProp(_el$116, "width", 18);
+                  _$insertNode(_el$118, _$createTextNode(`every shortcut`));
+                  _$setProp(_el$118, "wrapMode", "none");
                   _$effect(_p$ => {
-                    var _v$52 = theme.border.base,
-                      _v$53 = theme.text.action.primary.selected,
-                      _v$54 = TextAttributes.BOLD,
-                      _v$55 = theme.text.muted,
-                      _v$56 = theme.text.base,
-                      _v$57 = theme.text.muted,
-                      _v$58 = theme.text.base,
-                      _v$59 = theme.text.muted,
-                      _v$60 = theme.text.base,
-                      _v$61 = theme.text.muted,
-                      _v$62 = theme.text.base,
-                      _v$63 = theme.text.muted,
-                      _v$64 = theme.text.base,
-                      _v$65 = theme.text.muted,
-                      _v$66 = theme.text.base;
-                    _v$52 !== _p$.e && (_p$.e = _$setProp(_el$85, "borderColor", _v$52, _p$.e));
-                    _v$53 !== _p$.t && (_p$.t = _$setProp(_el$86, "fg", _v$53, _p$.t));
-                    _v$54 !== _p$.a && (_p$.a = _$setProp(_el$86, "attributes", _v$54, _p$.a));
-                    _v$55 !== _p$.o && (_p$.o = _$setProp(_el$89, "fg", _v$55, _p$.o));
-                    _v$56 !== _p$.i && (_p$.i = _$setProp(_el$91, "fg", _v$56, _p$.i));
-                    _v$57 !== _p$.n && (_p$.n = _$setProp(_el$94, "fg", _v$57, _p$.n));
-                    _v$58 !== _p$.s && (_p$.s = _$setProp(_el$96, "fg", _v$58, _p$.s));
-                    _v$59 !== _p$.h && (_p$.h = _$setProp(_el$99, "fg", _v$59, _p$.h));
-                    _v$60 !== _p$.r && (_p$.r = _$setProp(_el$101, "fg", _v$60, _p$.r));
-                    _v$61 !== _p$.d && (_p$.d = _$setProp(_el$104, "fg", _v$61, _p$.d));
-                    _v$62 !== _p$.l && (_p$.l = _$setProp(_el$106, "fg", _v$62, _p$.l));
-                    _v$63 !== _p$.u && (_p$.u = _$setProp(_el$109, "fg", _v$63, _p$.u));
-                    _v$64 !== _p$.c && (_p$.c = _$setProp(_el$111, "fg", _v$64, _p$.c));
-                    _v$65 !== _p$.w && (_p$.w = _$setProp(_el$114, "fg", _v$65, _p$.w));
-                    _v$66 !== _p$.m && (_p$.m = _$setProp(_el$116, "fg", _v$66, _p$.m));
+                    var _v$53 = theme.border.base,
+                      _v$54 = theme.text.action.primary.selected,
+                      _v$55 = TextAttributes.BOLD,
+                      _v$56 = theme.text.muted,
+                      _v$57 = theme.text.base,
+                      _v$58 = theme.text.muted,
+                      _v$59 = theme.text.base,
+                      _v$60 = theme.text.muted,
+                      _v$61 = theme.text.base,
+                      _v$62 = theme.text.muted,
+                      _v$63 = theme.text.base,
+                      _v$64 = theme.text.muted,
+                      _v$65 = theme.text.base,
+                      _v$66 = theme.text.muted,
+                      _v$67 = theme.text.base;
+                    _v$53 !== _p$.e && (_p$.e = _$setProp(_el$87, "borderColor", _v$53, _p$.e));
+                    _v$54 !== _p$.t && (_p$.t = _$setProp(_el$88, "fg", _v$54, _p$.t));
+                    _v$55 !== _p$.a && (_p$.a = _$setProp(_el$88, "attributes", _v$55, _p$.a));
+                    _v$56 !== _p$.o && (_p$.o = _$setProp(_el$91, "fg", _v$56, _p$.o));
+                    _v$57 !== _p$.i && (_p$.i = _$setProp(_el$93, "fg", _v$57, _p$.i));
+                    _v$58 !== _p$.n && (_p$.n = _$setProp(_el$96, "fg", _v$58, _p$.n));
+                    _v$59 !== _p$.s && (_p$.s = _$setProp(_el$98, "fg", _v$59, _p$.s));
+                    _v$60 !== _p$.h && (_p$.h = _$setProp(_el$101, "fg", _v$60, _p$.h));
+                    _v$61 !== _p$.r && (_p$.r = _$setProp(_el$103, "fg", _v$61, _p$.r));
+                    _v$62 !== _p$.d && (_p$.d = _$setProp(_el$106, "fg", _v$62, _p$.d));
+                    _v$63 !== _p$.l && (_p$.l = _$setProp(_el$108, "fg", _v$63, _p$.l));
+                    _v$64 !== _p$.u && (_p$.u = _$setProp(_el$111, "fg", _v$64, _p$.u));
+                    _v$65 !== _p$.c && (_p$.c = _$setProp(_el$113, "fg", _v$65, _p$.c));
+                    _v$66 !== _p$.w && (_p$.w = _$setProp(_el$116, "fg", _v$66, _p$.w));
+                    _v$67 !== _p$.m && (_p$.m = _$setProp(_el$118, "fg", _v$67, _p$.m));
                     return _p$;
                   }, {
                     e: undefined,
@@ -1985,39 +2395,39 @@ export function Browser(props) {
                     w: undefined,
                     m: undefined
                   });
-                  return _el$85;
+                  return _el$87;
                 }
               }), null);
               _$effect(_p$ => {
-                var _v$67 = theme.text.base,
-                  _v$68 = TextAttributes.BOLD,
-                  _v$69 = theme.text.muted;
-                _v$67 !== _p$.e && (_p$.e = _$setProp(_el$81, "fg", _v$67, _p$.e));
-                _v$68 !== _p$.t && (_p$.t = _$setProp(_el$81, "attributes", _v$68, _p$.t));
-                _v$69 !== _p$.a && (_p$.a = _$setProp(_el$82, "fg", _v$69, _p$.a));
+                var _v$68 = theme.text.base,
+                  _v$69 = TextAttributes.BOLD,
+                  _v$70 = theme.text.muted;
+                _v$68 !== _p$.e && (_p$.e = _$setProp(_el$83, "fg", _v$68, _p$.e));
+                _v$69 !== _p$.t && (_p$.t = _$setProp(_el$83, "attributes", _v$69, _p$.t));
+                _v$70 !== _p$.a && (_p$.a = _$setProp(_el$84, "fg", _v$70, _p$.a));
                 return _p$;
               }, {
                 e: undefined,
                 t: undefined,
                 a: undefined
               });
-              return _el$80;
+              return _el$82;
             })();
           },
           get children() {
             return _$createComponent(ErrorBoundary, {
               fallback: cause => (() => {
-                var _el$118 = _$createElement("box"),
-                  _el$119 = _$createElement("text"),
-                  _el$120 = _$createTextNode(`Could not render this file: `);
-                _$insertNode(_el$118, _el$119);
-                _$setProp(_el$118, "flexGrow", 1);
-                _$setProp(_el$118, "padding", 1);
-                _$insertNode(_el$119, _el$120);
-                _$setProp(_el$119, "wrapMode", "word");
-                _$insert(_el$119, () => message(cause), null);
-                _$effect(_$p => _$setProp(_el$119, "fg", theme.text.feedback.error.base, _$p));
-                return _el$118;
+                var _el$120 = _$createElement("box"),
+                  _el$121 = _$createElement("text"),
+                  _el$122 = _$createTextNode(`Could not render this file: `);
+                _$insertNode(_el$120, _el$121);
+                _$setProp(_el$120, "flexGrow", 1);
+                _$setProp(_el$120, "padding", 1);
+                _$insertNode(_el$121, _el$122);
+                _$setProp(_el$121, "wrapMode", "word");
+                _$insert(_el$121, () => message(cause), null);
+                _$effect(_$p => _$setProp(_el$121, "fg", theme.text.feedback.error.base, _$p));
+                return _el$120;
               })(),
               get children() {
                 var _el$54 = _$createElement("box");
@@ -2049,7 +2459,9 @@ export function Browser(props) {
                   onSave: () => void save(),
                   onCursor: () => {},
                   onLeave: () => setFocus("explorer"),
-                  onKey: editorKey
+                  onKey: editorKey,
+                  onToggleMode: toggleEdit,
+                  onReady: api => editorApi = api
                 }));
                 return _el$54;
               }
@@ -2075,7 +2487,8 @@ export function Browser(props) {
           _el$67 = _$createElement("box"),
           _el$68 = _$createElement("text"),
           _el$70 = _$createElement("text"),
-          _el$72 = _$createElement("text");
+          _el$72 = _$createElement("text"),
+          _el$74 = _$createElement("text");
         _$insertNode(_el$55, _el$56);
         _$insertNode(_el$55, _el$62);
         _$insertNode(_el$55, _el$67);
@@ -2185,16 +2598,19 @@ export function Browser(props) {
         _$insertNode(_el$67, _el$68);
         _$insertNode(_el$67, _el$70);
         _$insertNode(_el$67, _el$72);
+        _$insertNode(_el$67, _el$74);
         _$setProp(_el$67, "flexShrink", 0);
         _$setProp(_el$67, "flexDirection", "column");
         _$setProp(_el$67, "paddingLeft", 1);
         _$setProp(_el$67, "paddingRight", 1);
-        _$insertNode(_el$68, _$createTextNode(`a stage · u unstage · d discard`));
+        _$insertNode(_el$68, _$createTextNode(`a stage · u unstage`));
         _$setProp(_el$68, "wrapMode", "none");
-        _$insertNode(_el$70, _$createTextNode(`c commit · l pull · p push`));
+        _$insertNode(_el$70, _$createTextNode(`d discard · c commit`));
         _$setProp(_el$70, "wrapMode", "none");
-        _$insertNode(_el$72, _$createTextNode(`g history · b branches · R refresh`));
+        _$insertNode(_el$72, _$createTextNode(`l pull · p push`));
         _$setProp(_el$72, "wrapMode", "none");
+        _$insertNode(_el$74, _$createTextNode(`g history · b branch · R`));
+        _$setProp(_el$74, "wrapMode", "none");
         _$effect(_p$ => {
           var _v$21 = focus() === "changes" ? theme.border.base : theme.background.raised.base,
             _v$22 = surface(),
@@ -2204,7 +2620,8 @@ export function Browser(props) {
             _v$26 = theme.text.muted,
             _v$27 = theme.text.muted,
             _v$28 = theme.text.muted,
-            _v$29 = theme.text.muted;
+            _v$29 = theme.text.muted,
+            _v$30 = theme.text.muted;
           _v$21 !== _p$.e && (_p$.e = _$setProp(_el$55, "borderColor", _v$21, _p$.e));
           _v$22 !== _p$.t && (_p$.t = _$setProp(_el$55, "backgroundColor", _v$22, _p$.t));
           _v$23 !== _p$.a && (_p$.a = _$setProp(_el$57, "fg", _v$23, _p$.a));
@@ -2214,6 +2631,7 @@ export function Browser(props) {
           _v$27 !== _p$.s && (_p$.s = _$setProp(_el$68, "fg", _v$27, _p$.s));
           _v$28 !== _p$.h && (_p$.h = _$setProp(_el$70, "fg", _v$28, _p$.h));
           _v$29 !== _p$.r && (_p$.r = _$setProp(_el$72, "fg", _v$29, _p$.r));
+          _v$30 !== _p$.d && (_p$.d = _$setProp(_el$74, "fg", _v$30, _p$.d));
           return _p$;
         }, {
           e: undefined,
@@ -2224,7 +2642,8 @@ export function Browser(props) {
           n: undefined,
           s: undefined,
           h: undefined,
-          r: undefined
+          r: undefined,
+          d: undefined
         });
         return _el$55;
       }
@@ -2234,10 +2653,10 @@ export function Browser(props) {
         return _$memo(() => !!!docked())() && options().mouse;
       },
       get children() {
-        var _el$74 = _$createElement("box");
-        _$setProp(_el$74, "width", 1);
-        _$setProp(_el$74, "flexShrink", 0);
-        _$setProp(_el$74, "onMouseDown", event => {
+        var _el$76 = _$createElement("box");
+        _$setProp(_el$76, "width", 1);
+        _$setProp(_el$76, "flexShrink", 0);
+        _$setProp(_el$76, "onMouseDown", event => {
           if (event.button !== MouseButton.LEFT) return;
           event.stopPropagation();
           setDrag({
@@ -2245,92 +2664,92 @@ export function Browser(props) {
             width: explorerWidth()
           });
         });
-        _$setProp(_el$74, "onMouseDrag", event => {
+        _$setProp(_el$76, "onMouseDrag", event => {
           if (!drag().active) return;
           event.stopPropagation();
           setSplitWidth(Math.max(18, Math.min(60, drag().width + event.deltaX)));
         });
-        _$setProp(_el$74, "onMouseUp", () => setDrag({
+        _$setProp(_el$76, "onMouseUp", () => setDrag({
           active: false,
           width: 0
         }));
-        _$effect(_$p => _$setProp(_el$74, "backgroundColor", drag().active ? theme.border.base : surface(), _$p));
-        return _el$74;
+        _$effect(_$p => _$setProp(_el$76, "backgroundColor", drag().active ? theme.border.base : surface(), _$p));
+        return _el$76;
       }
     }), null);
-    _$insertNode(_el$75, _el$76);
-    _$insertNode(_el$75, _el$77);
-    _$setProp(_el$75, "height", 1);
-    _$setProp(_el$75, "flexShrink", 0);
-    _$setProp(_el$75, "paddingRight", 2);
-    _$setProp(_el$75, "flexDirection", "row");
-    _$setProp(_el$75, "gap", 1);
-    _$setProp(_el$76, "wrapMode", "none");
-    _$setProp(_el$76, "truncate", true);
-    _$setProp(_el$76, "flexGrow", 1);
-    _$insert(_el$76, () => status() ?? (typing() ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help" : focus() === "changes" ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches" : focus() === "editor" ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help" : "↑↓ move · enter open · → expand · ← collapse · tab pane · ctrl+f search · ctrl+e mode · F2 prefs · F1 help"));
-    _$setProp(_el$77, "wrapMode", "none");
-    _$insert(_el$77, (() => {
-      var _c$4 = _$memo(() => !!simple());
-      return () => _c$4() ? "simple" : `${docs().length} tabs`;
+    _$insertNode(_el$77, _el$78);
+    _$insertNode(_el$77, _el$79);
+    _$setProp(_el$77, "height", 1);
+    _$setProp(_el$77, "flexShrink", 0);
+    _$setProp(_el$77, "paddingRight", 2);
+    _$setProp(_el$77, "flexDirection", "row");
+    _$setProp(_el$77, "gap", 1);
+    _$setProp(_el$78, "wrapMode", "none");
+    _$setProp(_el$78, "truncate", true);
+    _$setProp(_el$78, "flexGrow", 1);
+    _$insert(_el$78, () => status() ?? (typing() ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help" : focus() === "changes" ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches" : focus() === "editor" ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help" : "↑↓ move · enter open · → expand · ← collapse · tab pane · ctrl+f search · ctrl+e mode · F2 prefs · F1 help"));
+    _$setProp(_el$79, "wrapMode", "none");
+    _$insert(_el$79, (() => {
+      var _c$5 = _$memo(() => !!simple());
+      return () => _c$5() ? "simple" : `${docs().length} tabs`;
     })());
-    _$insert(_el$75, _$createComponent(Show, {
+    _$insert(_el$77, _$createComponent(Show, {
       get when() {
         return props.panel;
       },
       get children() {
-        var _el$78 = _$createElement("text");
-        _$insertNode(_el$78, _$createTextNode(`f fullscreen`));
-        _$setProp(_el$78, "wrapMode", "none");
-        _$effect(_$p => _$setProp(_el$78, "fg", theme.text.muted, _$p));
-        return _el$78;
+        var _el$80 = _$createElement("text");
+        _$insertNode(_el$80, _$createTextNode(`f fullscreen`));
+        _$setProp(_el$80, "wrapMode", "none");
+        _$effect(_$p => _$setProp(_el$80, "fg", theme.text.muted, _$p));
+        return _el$80;
       }
     }), null);
     _$effect(_p$ => {
-      var _v$30 = surface(),
-        _v$31 = docked() ? 2 : 1,
-        _v$32 = theme.text.base,
-        _v$33 = TextAttributes.BOLD,
-        _v$34 = theme.text.muted,
+      var _v$31 = surface(),
+        _v$32 = docked() ? 2 : 1,
+        _v$33 = theme.text.base,
+        _v$34 = TextAttributes.BOLD,
         _v$35 = theme.text.muted,
-        _v$36 = explorerWidth(),
-        _v$37 = surface(),
-        _v$38 = !docked(),
-        _v$39 = focus() === "explorer" ? theme.border.base : theme.background.raised.base,
-        _v$40 = theme.text.base,
-        _v$41 = TextAttributes.BOLD,
-        _v$42 = theme.text.muted,
+        _v$36 = theme.text.muted,
+        _v$37 = explorerWidth(),
+        _v$38 = surface(),
+        _v$39 = !docked(),
+        _v$40 = focus() === "explorer" ? theme.border.base : theme.background.raised.base,
+        _v$41 = theme.text.base,
+        _v$42 = TextAttributes.BOLD,
         _v$43 = theme.text.muted,
-        _v$44 = query(),
-        _v$45 = searchMode() === "name" ? "Search files…" : "Search content…",
-        _v$46 = surface(),
-        _v$47 = theme.text.base,
+        _v$44 = theme.text.muted,
+        _v$45 = query(),
+        _v$46 = searchMode() === "name" ? "Search files…" : "Search content…",
+        _v$47 = surface(),
         _v$48 = theme.text.base,
-        _v$49 = docked() ? 2 : 1,
-        _v$50 = theme.text.muted,
-        _v$51 = theme.text.muted;
-      _v$30 !== _p$.e && (_p$.e = _$setProp(_el$24, "backgroundColor", _v$30, _p$.e));
-      _v$31 !== _p$.t && (_p$.t = _$setProp(_el$25, "paddingLeft", _v$31, _p$.t));
-      _v$32 !== _p$.a && (_p$.a = _$setProp(_el$26, "fg", _v$32, _p$.a));
-      _v$33 !== _p$.o && (_p$.o = _$setProp(_el$26, "attributes", _v$33, _p$.o));
-      _v$34 !== _p$.i && (_p$.i = _$setProp(_el$28, "fg", _v$34, _p$.i));
-      _v$35 !== _p$.n && (_p$.n = _$setProp(_el$30, "fg", _v$35, _p$.n));
-      _v$36 !== _p$.s && (_p$.s = _$setProp(_el$32, "width", _v$36, _p$.s));
-      _v$37 !== _p$.h && (_p$.h = _$setProp(_el$32, "backgroundColor", _v$37, _p$.h));
-      _v$38 !== _p$.r && (_p$.r = _$setProp(_el$32, "border", _v$38, _p$.r));
-      _v$39 !== _p$.d && (_p$.d = _$setProp(_el$32, "borderColor", _v$39, _p$.d));
-      _v$40 !== _p$.l && (_p$.l = _$setProp(_el$34, "fg", _v$40, _p$.l));
-      _v$41 !== _p$.u && (_p$.u = _$setProp(_el$34, "attributes", _v$41, _p$.u));
-      _v$42 !== _p$.c && (_p$.c = _$setProp(_el$36, "fg", _v$42, _p$.c));
-      _v$43 !== _p$.w && (_p$.w = _$setProp(_el$39, "fg", _v$43, _p$.w));
-      _v$44 !== _p$.m && (_p$.m = _$setProp(_el$41, "value", _v$44, _p$.m));
-      _v$45 !== _p$.f && (_p$.f = _$setProp(_el$41, "placeholder", _v$45, _p$.f));
-      _v$46 !== _p$.y && (_p$.y = _$setProp(_el$41, "backgroundColor", _v$46, _p$.y));
-      _v$47 !== _p$.g && (_p$.g = _$setProp(_el$41, "textColor", _v$47, _p$.g));
-      _v$48 !== _p$.p && (_p$.p = _$setProp(_el$41, "focusedTextColor", _v$48, _p$.p));
-      _v$49 !== _p$.b && (_p$.b = _$setProp(_el$75, "paddingLeft", _v$49, _p$.b));
-      _v$50 !== _p$.T && (_p$.T = _$setProp(_el$76, "fg", _v$50, _p$.T));
-      _v$51 !== _p$.A && (_p$.A = _$setProp(_el$77, "fg", _v$51, _p$.A));
+        _v$49 = theme.text.base,
+        _v$50 = docked() ? 2 : 1,
+        _v$51 = theme.text.muted,
+        _v$52 = theme.text.muted;
+      _v$31 !== _p$.e && (_p$.e = _$setProp(_el$24, "backgroundColor", _v$31, _p$.e));
+      _v$32 !== _p$.t && (_p$.t = _$setProp(_el$25, "paddingLeft", _v$32, _p$.t));
+      _v$33 !== _p$.a && (_p$.a = _$setProp(_el$26, "fg", _v$33, _p$.a));
+      _v$34 !== _p$.o && (_p$.o = _$setProp(_el$26, "attributes", _v$34, _p$.o));
+      _v$35 !== _p$.i && (_p$.i = _$setProp(_el$28, "fg", _v$35, _p$.i));
+      _v$36 !== _p$.n && (_p$.n = _$setProp(_el$30, "fg", _v$36, _p$.n));
+      _v$37 !== _p$.s && (_p$.s = _$setProp(_el$32, "width", _v$37, _p$.s));
+      _v$38 !== _p$.h && (_p$.h = _$setProp(_el$32, "backgroundColor", _v$38, _p$.h));
+      _v$39 !== _p$.r && (_p$.r = _$setProp(_el$32, "border", _v$39, _p$.r));
+      _v$40 !== _p$.d && (_p$.d = _$setProp(_el$32, "borderColor", _v$40, _p$.d));
+      _v$41 !== _p$.l && (_p$.l = _$setProp(_el$34, "fg", _v$41, _p$.l));
+      _v$42 !== _p$.u && (_p$.u = _$setProp(_el$34, "attributes", _v$42, _p$.u));
+      _v$43 !== _p$.c && (_p$.c = _$setProp(_el$36, "fg", _v$43, _p$.c));
+      _v$44 !== _p$.w && (_p$.w = _$setProp(_el$39, "fg", _v$44, _p$.w));
+      _v$45 !== _p$.m && (_p$.m = _$setProp(_el$41, "value", _v$45, _p$.m));
+      _v$46 !== _p$.f && (_p$.f = _$setProp(_el$41, "placeholder", _v$46, _p$.f));
+      _v$47 !== _p$.y && (_p$.y = _$setProp(_el$41, "backgroundColor", _v$47, _p$.y));
+      _v$48 !== _p$.g && (_p$.g = _$setProp(_el$41, "textColor", _v$48, _p$.g));
+      _v$49 !== _p$.p && (_p$.p = _$setProp(_el$41, "focusedTextColor", _v$49, _p$.p));
+      _v$50 !== _p$.b && (_p$.b = _$setProp(_el$77, "paddingLeft", _v$50, _p$.b));
+      _v$51 !== _p$.T && (_p$.T = _$setProp(_el$78, "fg", _v$51, _p$.T));
+      _v$52 !== _p$.A && (_p$.A = _$setProp(_el$79, "fg", _v$52, _p$.A));
       return _p$;
     }, {
       e: undefined,

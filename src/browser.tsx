@@ -5,12 +5,14 @@ import { MouseButton, SyntaxStyle, TextAttributes, type ScrollBoxRenderable, typ
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { ErrorBoundary, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import path from "node:path"
-import { readFile, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename as renameFile, rm, stat, writeFile } from "node:fs/promises"
 import {
   HEAVY_CHARS,
   HEAVY_LINES,
   MAX_CHARS,
   MAX_LINES,
+  OVERSIZE_BYTES,
+  OVERSIZE_LINES,
   basename,
   clampLongLines,
   expandHome,
@@ -19,6 +21,7 @@ import {
   isBinary,
   isMarkdown,
   message,
+  parentOf,
   type Entry,
 } from "./lib/util.js"
 import { useSettings, type Settings } from "./lib/settings.js"
@@ -28,6 +31,52 @@ import { EditorView, isDirty, type Doc } from "./ui/editor.js"
 import { SettingsDialog } from "./ui/settings.js"
 
 export const ROUTE = "file-browser"
+
+type Controller = {
+  readonly commands: () => any[]
+  readonly changes: () => any[]
+  readonly keys: () => any[]
+  readonly enabled: () => boolean
+  readonly changesEnabled: () => boolean
+  readonly typing: () => boolean
+}
+
+const [controller, setController] = createSignal<Controller>()
+
+/**
+ * Keymap layers are registered once for the plugin lifetime. The route and the
+ * panel mount/unmount freely (and remount on host re-renders), so binding the
+ * layers to a component instance made them disappear under heavy files.
+ */
+export function registerBrowserLayers(context: Plugin.Context) {
+  context.keymap.layer(() => {
+    const current = controller()
+    return {
+      mode: "global",
+      priority: 105,
+      enabled: () => !!current && current.enabled(),
+      commands: current?.keys() ?? [],
+    }
+  })
+  context.keymap.layer(() => {
+    const current = controller()
+    return {
+      mode: "global",
+      priority: 100,
+      enabled: () => !!current && current.enabled() && !current.typing(),
+      commands: current?.commands() ?? [],
+    }
+  })
+  context.keymap.layer(() => {
+    const current = controller()
+    return {
+      mode: "global",
+      priority: 110,
+      enabled: () => !!current && current.changesEnabled(),
+      commands: current?.changes() ?? [],
+    }
+  })
+}
 
 type Row = {
   readonly path: string
@@ -87,6 +136,8 @@ export function Browser(props: {
   const [index, setIndex] = createSignal(0)
   const [dirs, setDirs] = createSignal<Record<string, Entry[]>>({})
   const [expanded, setExpanded] = createSignal<readonly string[]>([])
+  const [navRoot, setNavRoot] = createSignal("")
+  const [externalChange, setExternalChange] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string>()
   const [query, setQuery] = createSignal("")
@@ -106,6 +157,37 @@ export function Browser(props: {
   const [splitWidth, setSplitWidth] = createSignal(0)
   let searchInput: InputRenderable | undefined
   let commitInput: InputRenderable | undefined
+  let editorApi: { newline: () => void } | undefined
+
+  // Tabs survive a trip to the chat: the panel unmounts when the session view
+  // takes over, so the documents live in the host's in-memory store.
+  const [stored, updateStored] = context.storage.memory<{
+    root?: string
+    docs?: Doc[]
+    active?: number
+    modes?: Record<string, boolean>
+    previews?: Record<string, boolean>
+    navRoot?: string
+  }>("browser", { initial: {} })
+  const restored = { ...stored }
+  let persistTimer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const snapshot = {
+      root: props.location().directory,
+      docs: docs(),
+      active: active(),
+      modes: modes(),
+      previews: previews(),
+      navRoot: navRoot(),
+    }
+    if (!snapshot.docs.length) return
+    clearTimeout(persistTimer)
+    persistTimer = setTimeout(() => {
+      void updateStored((draft) => {
+        Object.assign(draft, snapshot)
+      })
+    }, 250)
+  })
 
   const docked = () => props.panel !== undefined && props.panel.presentation === "panel"
   const simple = () => options().simple
@@ -141,13 +223,17 @@ export function Browser(props: {
     !!(searchInput && !searchInput.isDestroyed && searchInput.focused) ||
     !!(commitInput && !commitInput.isDestroyed && commitInput.focused)
 
+  const navigate = () => options().tree === "navigate"
+
   const rows = createMemo<Row[]>(() => {
     const name = query().trim()
+    const fold = (value: string) => (options().caseSensitive ? value : value.toLowerCase())
+    const needle = fold(name)
     if (name && searchMode() === "name") {
       if (name.length >= 2 && found().length > 0) {
         return found().map((value) => ({ path: value, type: "file" as const, depth: 0 }))
       }
-      return flatten(dirs(), expanded()).filter((row) => row.path.toLowerCase().includes(name.toLowerCase()))
+      return listing().filter((row) => fold(row.path).includes(needle))
     }
     if (searchMode() === "content" && name.length >= 2) {
       return hits().map((hit) => ({
@@ -158,8 +244,14 @@ export function Browser(props: {
         preview: hit.text,
       }))
     }
-    return flatten(dirs(), expanded())
+    return listing()
   })
+
+  function listing() {
+    if (!navigate()) return flatten(dirs(), expanded())
+    const root = navRoot()
+    return (dirs()[root] ?? []).map((entry) => ({ path: entry.path, type: entry.type, depth: 0 }))
+  }
 
   function flatten(cache: Record<string, Entry[]>, open: readonly string[], root = "", depth = 0, output: Row[] = []) {
     const entries = cache[root]
@@ -195,28 +287,23 @@ export function Browser(props: {
     return items
   }
 
-  async function expandAll() {
+  async function enterDirectory(target: string) {
+    setNavRoot(target)
     setLoading(true)
     try {
-      const open: string[] = []
-      const queue: Array<[string, number]> = [["", 0]]
-      let directoryCount = 0
-      while (queue.length && directoryCount < 200) {
-        const [current, depth] = queue.shift()!
-        const items = dirs()[current] ?? (await loadDirectory(current))
-        if (depth < 6) {
-          for (const item of items) {
-            if (item.type !== "directory") continue
-            directoryCount++
-            open.push(item.path)
-            queue.push([item.path, depth + 1])
-          }
-        }
-      }
-      setExpanded(open)
+      if (!dirs()[target]) await loadDirectory(target)
+      setIndex(0)
+    } catch (cause) {
+      setStatus(`Could not open ${target}: ${message(cause)}`)
     } finally {
       setLoading(false)
     }
+  }
+
+  async function goUp() {
+    if (!navRoot()) return false
+    await enterDirectory(parentOf(navRoot()))
+    return true
   }
 
   async function toggleDirectory(row: Row) {
@@ -249,7 +336,7 @@ export function Browser(props: {
         await loadDirectory(directory).catch(() => undefined)
       }
       setExpanded(open)
-      if (options().tree === "all" && open.length === 0) await expandAll()
+      if (navigate() && navRoot()) await loadDirectory(navRoot()).catch(() => undefined)
     } catch (cause) {
       setError(message(cause))
     }
@@ -260,12 +347,25 @@ export function Browser(props: {
       ? new Uint8Array(await readFile(target))
       : await context.client.file.read({ location: props.location(), path: target })
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBufferLike)
-    if (isBinary(data)) return { binary: true as const, size: data.length }
+    if (isBinary(data)) return { binary: true as const, oversize: false as const, size: data.length }
     let text = new TextDecoder("utf-8").decode(data)
+    if (data.length > OVERSIZE_BYTES) {
+      const lines = (text.match(/\n/g)?.length ?? 0) + 1
+      return { binary: false as const, oversize: true as const, lines, size: data.length }
+    }
     let truncated = false
-    const lines = text.split("\n")
-    if (lines.length > MAX_LINES) {
-      text = lines.slice(0, MAX_LINES).join("\n")
+    let lineCount = 0
+    let cut = -1
+    for (let index = 0; index < text.length; index++) {
+      if (text.charCodeAt(index) !== 10) continue
+      lineCount++
+      if (lineCount === MAX_LINES) cut = index
+    }
+    if (lineCount + 1 > OVERSIZE_LINES) {
+      return { binary: false as const, oversize: true as const, lines: lineCount + 1, size: data.length }
+    }
+    if (cut >= 0) {
+      text = text.slice(0, cut)
       truncated = true
     }
     if (text.length > MAX_CHARS) {
@@ -275,8 +375,8 @@ export function Browser(props: {
     const clamped = clampLongLines(text)
     text = clamped.text
     truncated = truncated || clamped.clipped
-    const readOnly = data.length > HEAVY_CHARS || lines.length > HEAVY_LINES || truncated
-    return { binary: false as const, text, truncated, readOnly, size: data.length }
+    const readOnly = data.length > HEAVY_CHARS || lineCount > HEAVY_LINES || truncated
+    return { binary: false as const, oversize: false as const, text, truncated, readOnly, size: data.length }
   }
 
   async function openDoc(target: string, external: boolean, line?: number) {
@@ -291,6 +391,27 @@ export function Browser(props: {
       const loaded = await loadFile(target, external)
       if (loaded.binary) {
         setStatus(`${basename(target)} is binary (${formatBytes(loaded.size)})`)
+        return
+      }
+      if (loaded.oversize) {
+        const next: Doc = {
+          path: target,
+          external,
+          text: "",
+          original: "",
+          type: filetype(target),
+          markdown: false,
+          truncated: true,
+          readOnly: true,
+          oversize: true,
+          lines: loaded.lines,
+        }
+        setDocs((list) => [...list, next])
+        setActive(docs().length - 1)
+        setModes((value) => ({ ...value, [target]: false }))
+        setPreviews((value) => ({ ...value, [target]: false }))
+        setFocus("editor")
+        setStatus(`${basename(target)} is too large to render (${loaded.lines ?? "many"} lines, ${formatBytes(loaded.size)})`)
         return
       }
       const { text, truncated, readOnly } = loaded
@@ -348,9 +469,52 @@ export function Browser(props: {
     await openDoc(relative ?? target, relative === undefined)
   }
 
+  async function openDiff(change: git.GitChange) {
+    const path = `diff:${change.path}`
+    const existing = docs().findIndex((item) => item.path === path)
+    if (existing >= 0) {
+      setActive(existing)
+      setFocus("editor")
+      return
+    }
+    try {
+      let text = ""
+      if (change.status === "untracked") {
+        const content = await readFile(absolute(change.path), "utf8")
+        const lines = content.split("\n")
+        text = `--- /dev/null\n+++ b/${change.path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`
+      } else {
+        const args = change.staged ? ["diff", "--cached", "--", change.path] : ["diff", "--", change.path]
+        const result = await git.git(props.location().directory, args)
+        text = result.stdout
+      }
+      if (!text.trim()) text = "No textual changes."
+      const next: Doc = {
+        path,
+        external: false,
+        text,
+        original: text,
+        type: filetype(change.path),
+        markdown: false,
+        truncated: false,
+        readOnly: true,
+        diff: true,
+        rawPath: change.path,
+      }
+      setDocs((list) => [...list, next])
+      setActive(docs().length - 1)
+      setModes((value) => ({ ...value, [path]: false }))
+      setPreviews((value) => ({ ...value, [path]: false }))
+      setFocus("editor")
+    } catch (cause) {
+      setStatus(`Could not diff ${change.path}: ${message(cause)}`)
+    }
+  }
+
   async function openRow(row: Row) {
     if (row.type === "directory") {
-      await toggleDirectory(row)
+      if (navigate()) await enterDirectory(row.path)
+      else await toggleDirectory(row)
       return
     }
     if (row.type === "hit") {
@@ -364,12 +528,12 @@ export function Browser(props: {
   function closeDoc(at: number) {
     const target = docs()[at]
     if (!target) return
-    const drop = () =>
-      setDocs((list) => {
-        const next = list.filter((_, position) => position !== at)
-        setActive((value) => Math.max(0, Math.min(next.length - 1, value >= at ? value - 1 : value)))
-        return next
-      })
+    const drop = () => {
+      const next = docs().filter((_, position) => position !== at)
+      const nextActive = Math.max(0, Math.min(next.length - 1, active() >= at ? active() - 1 : active()))
+      setDocs(next)
+      setActive(nextActive)
+    }
     if (!isDirty(target)) {
       drop()
       return
@@ -509,6 +673,10 @@ export function Browser(props: {
   function toggleEdit() {
     const current = doc()
     if (!current) return
+    if (current.diff) {
+      if (current.rawPath) void openDoc(current.rawPath, false)
+      return
+    }
     if (current.readOnly) {
       setStatus("Large file: read-only preview.")
       return
@@ -561,7 +729,12 @@ export function Browser(props: {
       }
       try {
         const result = await context.client.file.find({ location: props.location(), query: value.trim(), limit: 200 })
-        setFound(result.data.filter((entry) => entry.type === "file").map((entry) => entry.path))
+        setFound(
+          result.data
+            .filter((entry) => entry.type === "file")
+            .filter((entry) => !options().caseSensitive || entry.path.includes(value.trim()))
+            .map((entry) => entry.path),
+        )
       } catch {
         setFound([])
       }
@@ -573,7 +746,7 @@ export function Browser(props: {
     }
     setSearching(true)
     try {
-      const result = await searchContent(props.location().directory, value)
+      const result = await searchContent(props.location().directory, value, options().caseSensitive)
       if (value !== query()) return
       setHits([...result.hits])
       setHitsTruncated(result.truncated)
@@ -692,6 +865,124 @@ export function Browser(props: {
     { keys: "h", title: "Toggle hidden files" },
   ]
 
+  const absolute = (relative: string) => path.join(props.location().directory, relative)
+
+  async function refreshDirectory(relative: string) {
+    await loadDirectory(relative).catch(() => undefined)
+    if (!navigate() && relative && !expanded().includes(relative)) setExpanded((open) => [...open, relative])
+  }
+
+  function dropDocs(predicate: (item: Doc) => boolean) {
+    const next = docs().filter((item) => !predicate(item))
+    setDocs(next)
+    setActive((value) => Math.max(0, Math.min(next.length - 1, value)))
+  }
+
+  async function closeMany(mode: "others" | "all") {
+    const keep = mode === "others" ? docs()[active()] : undefined
+    const targets = docs().filter((item) => item !== keep)
+    if (!targets.length) return
+    const dirty = targets.filter(isDirty)
+    if (dirty.length && options().confirmDiscard) {
+      const ok = await context.ui.dialog.confirm({
+        title: "Close tabs",
+        message: `${dirty.length} unsaved ${dirty.length === 1 ? "file" : "files"} will lose changes.`,
+        label: { confirm: "Close", cancel: "Cancel" },
+      })
+      if (!ok) return
+    }
+    setDocs(keep ? [keep] : [])
+    setActive(keep ? 0 : -1)
+  }
+
+  async function openContext(kind: "tree" | "tab", target?: Row | Doc) {
+    const row = kind === "tree" ? (target as Row | undefined) : undefined
+    const tabDoc = kind === "tab" ? (target as Doc | undefined) ?? doc() : doc()
+    const base = row ? (row.type === "directory" ? row.path : parentOf(row.path)) : parentOf(tabDoc?.path ?? "")
+    const targetDoc = row && row.type !== "directory" ? docs().find((item) => item.path === row.path) : tabDoc
+    const treeOptions = [
+      { title: "New file…", value: "new-file" },
+      { title: "New folder…", value: "new-folder" },
+      { title: "Rename…", value: "rename", disabled: !row },
+      { title: "Delete…", value: "delete", disabled: !row },
+      { title: `Close tab${targetDoc ? ` (${basename(targetDoc.path)})` : ""}`, value: "close-tab", disabled: !targetDoc },
+      { title: "Close other tabs", value: "close-others" },
+      { title: "Close all tabs", value: "close-all" },
+    ]
+    const tabOptions = [
+      { title: `Close (${tabDoc ? basename(tabDoc.path) : "tab"})`, value: "close-tab" },
+      { title: "Close other tabs", value: "close-others" },
+      { title: "Close all tabs", value: "close-all" },
+    ]
+    const choice = await context.ui.dialog.select<string>({
+      title: kind === "tree" ? `Actions · ${row ? basename(row.path) : "project"}` : "Tab actions",
+      options: kind === "tree" ? treeOptions : tabOptions,
+    })
+    if (!choice) return
+
+    if (choice === "close-tab") {
+      const at = targetDoc ? docs().findIndex((item) => item.path === targetDoc.path && item.external === targetDoc.external) : active()
+      if (at >= 0) closeDoc(at)
+      return
+    }
+    if (choice === "close-others") return closeMany("others")
+    if (choice === "close-all") return closeMany("all")
+
+    if (choice === "new-file" || choice === "new-folder") {
+      const name = await context.ui.dialog.prompt({
+        title: choice === "new-file" ? "New file" : "New folder",
+        description: base ? `inside ${base}/` : "inside the project root",
+        placeholder: choice === "new-file" ? "notes.md" : "folder",
+      })
+      const clean = name?.trim().replace(/^\.?\//, "")
+      if (!clean) return
+      const relative = base ? `${base}/${clean}` : clean
+      try {
+        if (choice === "new-file") await writeFile(absolute(relative), "")
+        else await mkdir(absolute(relative), { recursive: true })
+        await refreshDirectory(base)
+        setStatus(`Created ${relative}`)
+        if (choice === "new-file") await openDoc(relative, false)
+      } catch (cause) {
+        setStatus(`Could not create ${relative}: ${message(cause)}`)
+      }
+      return
+    }
+
+    if (!row) return
+    if (choice === "rename") {
+      const name = await context.ui.dialog.prompt({ title: "Rename", value: basename(row.path), description: row.path })
+      const clean = name?.trim()
+      if (!clean || clean === basename(row.path)) return
+      const next = parentOf(row.path) ? `${parentOf(row.path)}/${clean}` : clean
+      try {
+        await renameFile(absolute(row.path), absolute(next))
+        dropDocs((item) => item.path === row.path || item.path.startsWith(`${row.path}/`))
+        await refreshDirectory(parentOf(row.path))
+        setStatus(`Renamed to ${next}`)
+      } catch (cause) {
+        setStatus(`Rename failed: ${message(cause)}`)
+      }
+      return
+    }
+    if (choice === "delete") {
+      const ok = await context.ui.dialog.confirm({
+        title: "Delete",
+        message: `Delete ${row.path}${row.type === "directory" ? " and everything inside it" : ""}?`,
+        label: { confirm: "Delete", cancel: "Cancel" },
+      })
+      if (!ok) return
+      try {
+        await rm(absolute(row.path), { recursive: true, force: true })
+        dropDocs((item) => item.path === row.path || item.path.startsWith(`${row.path}/`) || item.rawPath === row.path)
+        await refreshDirectory(parentOf(row.path))
+        setStatus(`Deleted ${row.path}`)
+      } catch (cause) {
+        setStatus(`Delete failed: ${message(cause)}`)
+      }
+    }
+  }
+
   const commands: any[] = [
     {
       id: "file-browser.escape",
@@ -729,7 +1020,14 @@ export function Browser(props: {
       },
     },
     { id: "file-browser.select.space", title: "Open selected item", group: "Files", bind: "space", enabled: () => !inputFocused() && !composing() && focus() === "explorer", run: () => { const row = currentRow(); if (row) void openRow(row) } },
-    { id: "file-browser.parent", title: "Collapse folder / go up", group: "Files", bind: "left,backspace", enabled: () => !inputFocused() && !composing(), run: () => { const row = currentRow(); if (row?.type === "directory" && expanded().includes(row.path)) void toggleDirectory(row) } },
+    { id: "file-browser.parent", title: "Collapse folder / go up", group: "Files", bind: "left,backspace", enabled: () => !inputFocused() && !composing(), run: () => {
+      if (navigate()) {
+        if (navRoot()) void goUp()
+        return
+      }
+      const row = currentRow()
+      if (row?.type === "directory" && expanded().includes(row.path)) void toggleDirectory(row)
+    } },
     { id: "file-browser.expand", title: "Expand folder", group: "Files", bind: "right", enabled: () => !inputFocused() && !composing(), run: () => { const row = currentRow(); if (row?.type === "directory" && !expanded().includes(row.path)) void toggleDirectory(row) } },
     { id: "file-browser.collapse", title: "Collapse folder tree", group: "Files", bind: "shift+enter", enabled: () => !inputFocused() && !composing(), run: collapseAll },
     { id: "file-browser.page_down", title: "Page down", group: "Files", bind: "pagedown", enabled: () => !inputFocused() && !composing(), run: () => pageSelection(1) },
@@ -763,6 +1061,17 @@ export function Browser(props: {
   ]
 
   const changesCommands: any[] = [
+    {
+      id: "file-browser.git.open",
+      title: "Open the diff for this change",
+      group: "Git",
+      bind: "return,space",
+      enabled: () => !composing() && focus() === "changes",
+      run: () => {
+        const change = gitState().changes[changeIndex()]
+        if (change) void openDiff(change)
+      },
+    },
     { id: "file-browser.git.stage", title: "Stage change", group: "Git", bind: "a", enabled: () => !composing() && focus() === "changes", run: () => void runGitAction("stage") },
     { id: "file-browser.git.stage_all", title: "Stage all changes", group: "Git", bind: "shift+a", enabled: () => !composing() && focus() === "changes", run: () => void git.stage(props.location().directory).then(refreshGit) },
     { id: "file-browser.git.unstage", title: "Unstage change", group: "Git", bind: "u", enabled: () => !composing() && focus() === "changes", run: () => void runGitAction("unstage") },
@@ -775,10 +1084,7 @@ export function Browser(props: {
     { id: "file-browser.git.refresh", title: "Refresh git status", group: "Git", bind: "shift+r", enabled: () => !composing() && focus() === "changes", run: () => void refreshGit() },
   ]
 
-  context.keymap.layer(() => ({
-    priority: 105,
-    enabled: () => (props.panel ? props.panel.focused : true),
-    commands: [
+  const keyCommands: any[] = [
       { id: "file-browser.keys.help", title: "Keyboard shortcuts", group: "Files", bind: "f1", run: showHelp },
       { id: "file-browser.keys.settings", title: "Preferences", group: "Files", bind: "f2", run: openSettings },
       {
@@ -793,18 +1099,59 @@ export function Browser(props: {
         },
       },
       { id: "file-browser.keys.edit", title: "Toggle preview/editor", group: "Files", bind: "f4", run: toggleEdit },
-    ],
-  }))
-  context.keymap.layer(() => ({
-    priority: 100,
-    enabled: () => (props.panel ? props.panel.focused : true) && !typing(),
-    commands,
-  }))
-  context.keymap.layer(() => ({
-    priority: 110,
-    enabled: () => (props.panel ? props.panel.focused : true) && !composing() && focus() === "changes" && !typing(),
-    commands: changesCommands,
-  }))
+      {
+        id: "file-browser.keys.explorer",
+        title: "Focus the explorer",
+        group: "Files",
+        bind: "shift+tab",
+        enabled: () => !composing(),
+        run: () => setFocus("explorer"),
+      },
+      {
+        id: "file-browser.keys.actions",
+        title: "Item actions (new, rename, delete, close tabs)",
+        group: "Files",
+        bind: "f10",
+        run: () => {
+          if (focus() === "changes") return
+          if (focus() === "editor" && doc()) void openContext("tab", doc())
+          else void openContext("tree", currentRow())
+        },
+      },
+      { id: "file-browser.keys.refresh", title: "Refresh", group: "Files", bind: "f5", run: () => void refresh() },
+      {
+        id: "file-browser.keys.changes2",
+        title: "Focus changes",
+        group: "Git",
+        bind: "ctrl+g",
+        enabled: () => showChanges(),
+        run: () => {
+          setFocus("changes")
+          void refreshGit()
+        },
+      },
+      {
+        id: "file-browser.keys.newline",
+        title: "Insert a new line in the editor",
+        group: "Files",
+        bind: "return,shift+return",
+        enabled: () => typing(),
+        run: () => editorApi?.newline(),
+      },
+  ]
+
+  const instance: Controller = {
+    commands: () => commands,
+    changes: () => changesCommands,
+    keys: () => keyCommands,
+    enabled: () => (props.panel ? props.panel.focused : true),
+    changesEnabled: () => (props.panel ? props.panel.focused : true) && !composing() && focus() === "changes" && !typing(),
+    typing: () => typing(),
+  }
+  setController(instance)
+  onCleanup(() => {
+    if (controller() === instance) setController(undefined)
+  })
 
   async function promptPath() {
     const value = await context.ui.dialog.prompt({
@@ -860,15 +1207,24 @@ export function Browser(props: {
   async function refresh() {
     const current = doc()
     if (current && isDirty(current)) {
-      setStatus("Save or discard your edits before reloading.")
-      await refreshGit()
-      return
+      if (!externalChange()) {
+        setStatus("Save or discard your edits before reloading.")
+        await refreshGit()
+        return
+      }
+      const ok = await context.ui.dialog.confirm({
+        title: "Reload from disk",
+        message: "Your unsaved edits will be discarded.",
+        label: { confirm: "Reload", cancel: "Cancel" },
+      })
+      if (!ok) return
     }
+    setExternalChange(false)
     await refreshTree()
     if (current) {
       try {
         const loaded = await loadFile(current.path, current.external)
-        if (!loaded.binary) {
+        if (!loaded.binary && !loaded.oversize) {
           setDocs((list) =>
             list.map((item) =>
               item.path === current.path && item.external === current.external
@@ -949,29 +1305,35 @@ export function Browser(props: {
     const root = props.location().directory
     if (root === lastRoot) return
     lastRoot = root
-    setDocs([])
-    setActive(-1)
     setStatus(undefined)
     setQuery("")
     setHits([])
     setFound([])
+    if (restored.root === root && restored.docs?.length) {
+      setDocs(restored.docs)
+      setActive(Math.min(restored.active ?? 0, restored.docs.length - 1))
+      setModes(restored.modes ?? {})
+      setPreviews(restored.previews ?? {})
+      setNavRoot(restored.navRoot ?? "")
+    } else {
+      setDocs([])
+      setActive(-1)
+      setNavRoot("")
+    }
     void refreshTree()
     void refreshGit()
   })
 
-  onMount(() => {
-    void refreshTree()
-    void refreshGit()
-  })
-
-  // Changing the Folders preference should take effect without reopening.
+  // Switching between in-place expansion and navigate mode starts from the
+  // project root so the list never shows stale rows.
   let lastTree: string | undefined
   createEffect(() => {
     const mode = options().tree
     if (mode === lastTree) return
     lastTree = mode
-    if (mode === "all") void expandAll()
-    else collapseAll()
+    setNavRoot("")
+    setExpanded([])
+    setIndex(0)
   })
 
   // Keep focus on a pane that exists when simple mode hides the git panel.
@@ -1005,7 +1367,8 @@ export function Browser(props: {
 
   const branch = () => (gitState().repo ? gitState().branch : "")
 
-  const tabLabel = (item: Doc) => `${isDirty(item) ? "● " : ""}${basename(item.path)}`
+  const tabLabel = (item: Doc) =>
+    `${isDirty(item) ? "● " : ""}${item.diff ? "Δ " : ""}${basename(item.rawPath ?? item.path)}`
 
   const Tab = (tabProps: { item: Doc; position: number }) => {
     const [hovered, setHovered] = createSignal(false)
@@ -1026,6 +1389,12 @@ export function Browser(props: {
         onMouseOut={() => setHovered(false)}
         onMouseUp={(event: any) => {
           if (!options().mouse) return
+          if (event.button === MouseButton.RIGHT) {
+            event.stopPropagation()
+            setActive(tabProps.position)
+            void openContext("tab", tabProps.item)
+            return
+          }
           if (event.button === MouseButton.MIDDLE) {
             event.stopPropagation()
             closeDoc(tabProps.position)
@@ -1081,7 +1450,15 @@ export function Browser(props: {
         onMouseOver={() => setHovered(true)}
         onMouseOut={() => setHovered(false)}
         onMouseUp={(event: any) => {
-          if (!options().mouse || event.button !== MouseButton.LEFT) return
+          if (!options().mouse) return
+          if (event.button === MouseButton.RIGHT) {
+            event.stopPropagation()
+            setFocus("explorer")
+            setIndex(rowProps.position)
+            void openContext("tree", rowProps.row)
+            return
+          }
+          if (event.button !== MouseButton.LEFT) return
           event.stopPropagation()
           setFocus("explorer")
           setIndex(rowProps.position)
@@ -1140,7 +1517,7 @@ export function Browser(props: {
         event.stopPropagation()
         setFocus("changes")
         setChangeIndex(changeProps.position)
-        void openDoc(changeProps.change.path, false)
+        void openDiff(changeProps.change)
       }}
     >
       <text
@@ -1178,6 +1555,7 @@ export function Browser(props: {
         </text>
         <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
           {context.ui.format.path(props.location().directory)}
+          {navRoot() ? `/${navRoot()}` : ""}
         </text>
         <Show when={branch()}>
           <text fg={theme.text.muted} wrapMode="none">
@@ -1385,6 +1763,8 @@ export function Browser(props: {
                     onCursor={() => {}}
                     onLeave={() => setFocus("explorer")}
                     onKey={editorKey}
+                    onToggleMode={toggleEdit}
+                    onReady={(api) => (editorApi = api)}
                   />
                 </box>
               </ErrorBoundary>
@@ -1458,13 +1838,16 @@ export function Browser(props: {
             </Show>
             <box flexShrink={0} flexDirection="column" paddingLeft={1} paddingRight={1}>
               <text fg={theme.text.muted} wrapMode="none">
-                a stage · u unstage · d discard
+                a stage · u unstage
               </text>
               <text fg={theme.text.muted} wrapMode="none">
-                c commit · l pull · p push
+                d discard · c commit
               </text>
               <text fg={theme.text.muted} wrapMode="none">
-                g history · b branches · R refresh
+                l pull · p push
+              </text>
+              <text fg={theme.text.muted} wrapMode="none">
+                g history · b branch · R
               </text>
             </box>
           </box>

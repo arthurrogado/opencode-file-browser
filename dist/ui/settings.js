@@ -27,9 +27,9 @@ const ROWS = [{
 }, {
   key: "tree",
   label: "Folders",
-  hint: "collapsed or full tree",
+  hint: "expand in place or navigate into",
   kind: "choice",
-  values: ["collapsed", "all"]
+  values: ["expand", "navigate"]
 }, {
   key: "panelPreview",
   label: "Panel preview",
@@ -56,6 +56,11 @@ const ROWS = [{
   hint: "default search target",
   kind: "choice",
   values: ["name", "content"]
+}, {
+  key: "caseSensitive",
+  label: "Case sensitive",
+  hint: "match case in searches",
+  kind: "toggle"
 }, {
   key: "confirmDiscard",
   label: "Confirm discard",
@@ -90,7 +95,7 @@ export function SettingsDialog(props) {
     const target = values[(at + direction + values.length) % values.length];
     set(next => {
       ;
-      next[row.key] = row.key === "tabWidth" ? Number(target) : target;
+      next[row.key] = target;
     });
   };
   const label = row => {

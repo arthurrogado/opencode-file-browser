@@ -49,13 +49,13 @@ const parseGrep = stdout => {
  * Content search that prefers `git grep` (respects .gitignore, fast on big
  * repos) and falls back to plain grep outside a repository.
  */
-export async function searchContent(root, query) {
+export async function searchContent(root, query, caseSensitive = false) {
   const value = query.trim();
   if (value.length < 2) return {
     hits: [],
     truncated: false
   };
-  const git = await run("git", ["grep", "--untracked", "-n", "-I", "--no-color", "-e", value], root);
+  const git = await run("git", ["grep", "--untracked", "-n", "-I", "--no-color", ...(caseSensitive ? [] : ["-i"]), "-e", value], root);
   if (git.ok || !git.ok && git.stdout) {
     const parsed = parseGrep(git.stdout);
     return {
@@ -63,7 +63,7 @@ export async function searchContent(root, query) {
       truncated: parsed.truncated
     };
   }
-  const grep = await run("grep", ["-rnI", "--binary-files=without-match", "--exclude-dir=node_modules", "--exclude-dir=.git", "--exclude-dir=dist", "--exclude-dir=build", "-e", value, "."], root);
+  const grep = await run("grep", ["-rnI", "--binary-files=without-match", "--exclude-dir=node_modules", "--exclude-dir=.git", "--exclude-dir=dist", "--exclude-dir=build", ...(caseSensitive ? [] : ["-i"]), "-e", value, "."], root);
   const parsed = parseGrep(grep.stdout);
   if (!grep.ok && grep.stderr && parsed.hits.length === 0) {
     return {

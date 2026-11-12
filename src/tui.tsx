@@ -7,7 +7,7 @@ import path from "node:path"
 import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { Browser, ROUTE } from "./browser.js"
+import { Browser, ROUTE, registerBrowserLayers } from "./browser.js"
 
 function BrowserRoute(props: {
   context: Plugin.Context
@@ -164,6 +164,7 @@ function Commands(props: { context: Plugin.Context }) {
         description: "Open the preferences modal",
         group: "Files",
         palette: true,
+        bind: "f2",
         slash: { name: "files-settings", aliases: ["preferencias-arquivos"] },
         run: () => act("settings"),
       },
@@ -251,6 +252,7 @@ function Commands(props: { context: Plugin.Context }) {
 export default Plugin.define({
   id: "opencode-file-browser",
   setup(context) {
+    registerBrowserLayers(context)
     const offPanel = context.ui.slot({
       append: "session.panel",
       render: (panel) => (

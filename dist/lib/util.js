@@ -4,11 +4,16 @@ import { homedir } from "node:os";
 // Soft caps for what we hand to the renderer. The editor and the preview both
 // stay responsive below these; above them the file opens in a plain, unhighlighted
 // window instead of freezing the TUI.
-export const MAX_LINES = 20_000;
+export const MAX_LINES = 2_000;
 export const MAX_CHARS = 4 * 1024 * 1024;
 export const MAX_LINE_CHARS = 4_000;
 // Above this size highlighting is disabled and the file is rendered as plain text.
 export const HEAVY_LINES = 5_000;
+// Above this the renderer is fed a placeholder instead of the buffer: huge
+// inputs can starve the TUI event loop and the host then stops routing keys to
+// the plugin.
+export const OVERSIZE_LINES = 20_000;
+export const OVERSIZE_BYTES = 2 * 1024 * 1024;
 export const HEAVY_CHARS = 512 * 1024;
 export const EXTENSIONS = {
   ".abap": "abap",
