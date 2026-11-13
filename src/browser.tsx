@@ -81,6 +81,8 @@ type Row = {
   readonly depth: number
   readonly line?: number
   readonly preview?: string
+  /** The synthetic ".." entry of navigate mode. */
+  readonly parent?: boolean
 }
 
 const iconFor = (row: Row, theme: Plugin.Context["theme"]) => {
@@ -247,7 +249,8 @@ export function Browser(props: {
   function listing() {
     if (!navigate()) return flatten(dirs(), expanded())
     const root = navRoot()
-    return (dirs()[root] ?? []).map((entry) => ({ path: entry.path, type: entry.type, depth: 0 }))
+    const rows: Row[] = (dirs()[root] ?? []).map((entry) => ({ path: entry.path, type: entry.type as "file" | "directory", depth: 0 }))
+    return root ? [{ path: "..", type: "directory" as const, depth: 0, parent: true }, ...rows] : rows
   }
 
   function flatten(cache: Record<string, Entry[]>, open: readonly string[], root = "", depth = 0, output: Row[] = []) {
@@ -285,21 +288,23 @@ export function Browser(props: {
   }
 
   async function enterDirectory(target: string) {
-    setNavRoot(target)
     setLoading(true)
     try {
       if (!dirs()[target]) await loadDirectory(target)
+      setNavRoot(target)
       setIndex(0)
     } catch (cause) {
+      // Keep the previous listing: a failed load must never leave an empty
+      // screen that looks frozen.
       setStatus(`Could not open ${target}: ${message(cause)}`)
     } finally {
       setLoading(false)
     }
   }
 
-  async function goUp() {
+  async function goUp(root = false) {
     if (!navRoot()) return false
-    await enterDirectory(parentOf(navRoot()))
+    await enterDirectory(root ? "" : parentOf(navRoot()))
     return true
   }
 
@@ -320,7 +325,12 @@ export function Browser(props: {
   }
 
   function collapseAll() {
+    if (navigate()) {
+      void goUp(true)
+      return
+    }
     setExpanded([])
+    setIndex(0)
   }
 
   async function refreshTree() {
@@ -509,6 +519,10 @@ export function Browser(props: {
   }
 
   async function openRow(row: Row) {
+    if (row.parent) {
+      await goUp()
+      return
+    }
     if (row.type === "directory") {
       if (navigate()) await enterDirectory(row.path)
       else await toggleDirectory(row)
@@ -1465,7 +1479,7 @@ export function Browser(props: {
         }}
       >
         <text fg={icon().color} wrapMode="none" selectable={false} flexShrink={0}>
-          {rowProps.row.type === "directory" ? (isOpen() ? "▾ " : "▸ ") : `${icon().glyph} `}
+          {rowProps.row.parent ? "↰ " : rowProps.row.type === "directory" ? (isOpen() ? "▾ " : "▸ ") : `${icon().glyph} `}
         </text>
         <text
           fg={
@@ -1479,9 +1493,11 @@ export function Browser(props: {
           truncate
           flexShrink={0}
         >
-          {rowProps.row.type === "hit"
-            ? `${rowProps.row.path}:${rowProps.row.line}`
-            : `${basename(rowProps.row.path)}${rowProps.row.type === "directory" ? "/" : ""}`}
+          {rowProps.row.parent
+            ? ".."
+            : rowProps.row.type === "hit"
+              ? `${rowProps.row.path}:${rowProps.row.line}`
+              : `${basename(rowProps.row.path)}${rowProps.row.type === "directory" ? "/" : ""}`}
         </text>
         <Show when={rowProps.row.type === "hit"}>
           <box paddingLeft={1} minWidth={0} flexGrow={1}>
@@ -1550,7 +1566,19 @@ export function Browser(props: {
         <text fg={theme.text.base} attributes={TextAttributes.BOLD} wrapMode="none">
           files
         </text>
-        <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+        <text
+          fg={theme.text.muted}
+          wrapMode="none"
+          truncate
+          flexGrow={1}
+          minWidth={0}
+          onMouseUp={(event: any) => {
+            if (!options().mouse || event.button !== MouseButton.LEFT) return
+            if (!navigate() || !navRoot()) return
+            event.stopPropagation?.()
+            void goUp()
+          }}
+        >
           {context.ui.format.path(props.location().directory)}
           {navRoot() ? `/${navRoot()}` : ""}
         </text>
@@ -1657,7 +1685,7 @@ export function Browser(props: {
             <Show when={!loading() && rows().length === 0}>
               <box paddingLeft={1}>
                 <text fg={theme.text.muted} wrapMode="none">
-                  {query().trim() ? "No matches" : "(empty)"}
+                  {query().trim() ? "No matches" : navigate() && navRoot() ? "empty folder · ← or .. to go up" : "(empty)"}
                 </text>
               </box>
             </Show>

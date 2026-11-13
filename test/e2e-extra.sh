@@ -113,6 +113,56 @@ expect "path with spaces opens" "spaced out"
 send C-w
 sleep 1
 
+say "== navigate mode has no dead end"
+send S-Tab
+sleep 0.4
+send F2
+wait_for "Preferences" 25 || true
+sleep 0.3
+send Home
+send Down
+send Down
+send Down
+sleep 0.2
+send Right
+sleep 0.5
+send Escape
+sleep 1
+send Escape
+sleep 0.4
+send Home
+sleep 0.3
+send Enter
+sleep 1.2
+expect "navigate enters the folder" "/proj/src"
+expect "navigate shows the parent row" "↰ .."
+send S-Enter
+sleep 1.2
+expect "collapse returns to the project root" "3 items"
+expect "root listing is back" "src/"
+send Home
+sleep 0.3
+send Enter
+sleep 1.2
+expect "entered again" "/proj/src"
+send Home
+sleep 0.3
+send Enter
+sleep 1.2
+expect "the .. row goes up" "3 items"
+send F2
+wait_for "Preferences" 25 || true
+sleep 0.3
+send Home
+send Down
+send Down
+send Down
+sleep 0.2
+send Left
+sleep 0.5
+send Escape
+sleep 1
+
 say "== context menu creates a file"
 send S-Tab
 sleep 0.4

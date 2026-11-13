@@ -234,11 +234,17 @@ export function Browser(props) {
   function listing() {
     if (!navigate()) return flatten(dirs(), expanded());
     const root = navRoot();
-    return (dirs()[root] ?? []).map(entry => ({
+    const rows = (dirs()[root] ?? []).map(entry => ({
       path: entry.path,
       type: entry.type,
       depth: 0
     }));
+    return root ? [{
+      path: "..",
+      type: "directory",
+      depth: 0,
+      parent: true
+    }, ...rows] : rows;
   }
   function flatten(cache, open, root = "", depth = 0, output = []) {
     const entries = cache[root];
@@ -280,20 +286,22 @@ export function Browser(props) {
     return items;
   }
   async function enterDirectory(target) {
-    setNavRoot(target);
     setLoading(true);
     try {
       if (!dirs()[target]) await loadDirectory(target);
+      setNavRoot(target);
       setIndex(0);
     } catch (cause) {
+      // Keep the previous listing: a failed load must never leave an empty
+      // screen that looks frozen.
       setStatus(`Could not open ${target}: ${message(cause)}`);
     } finally {
       setLoading(false);
     }
   }
-  async function goUp() {
+  async function goUp(root = false) {
     if (!navRoot()) return false;
-    await enterDirectory(parentOf(navRoot()));
+    await enterDirectory(root ? "" : parentOf(navRoot()));
     return true;
   }
   async function toggleDirectory(row) {
@@ -312,7 +320,12 @@ export function Browser(props) {
     }
   }
   function collapseAll() {
+    if (navigate()) {
+      void goUp(true);
+      return;
+    }
     setExpanded([]);
+    setIndex(0);
   }
   async function refreshTree() {
     const open = expanded();
@@ -542,6 +555,10 @@ export function Browser(props) {
     }
   }
   async function openRow(row) {
+    if (row.parent) {
+      await goUp();
+      return;
+    }
     if (row.type === "directory") {
       if (navigate()) await enterDirectory(row.path);else await toggleDirectory(row);
       return;
@@ -1851,15 +1868,15 @@ export function Browser(props) {
       _$setProp(_el$14, "selectable", false);
       _$setProp(_el$14, "flexShrink", 0);
       _$insert(_el$14, (() => {
-        var _c$ = _$memo(() => rowProps.row.type === "directory");
-        return () => _c$() ? isOpen() ? "▾ " : "▸ " : `${icon().glyph} `;
+        var _c$ = _$memo(() => !!rowProps.row.parent);
+        return () => _c$() ? "↰ " : _$memo(() => rowProps.row.type === "directory")() ? isOpen() ? "▾ " : "▸ " : `${icon().glyph} `;
       })());
       _$setProp(_el$15, "wrapMode", "none");
       _$setProp(_el$15, "truncate", true);
       _$setProp(_el$15, "flexShrink", 0);
       _$insert(_el$15, (() => {
-        var _c$2 = _$memo(() => rowProps.row.type === "hit");
-        return () => _c$2() ? `${rowProps.row.path}:${rowProps.row.line}` : `${basename(rowProps.row.path)}${rowProps.row.type === "directory" ? "/" : ""}`;
+        var _c$2 = _$memo(() => !!rowProps.row.parent);
+        return () => _c$2() ? ".." : _$memo(() => rowProps.row.type === "hit")() ? `${rowProps.row.path}:${rowProps.row.line}` : `${basename(rowProps.row.path)}${rowProps.row.type === "directory" ? "/" : ""}`;
       })());
       _$insert(_el$13, _$createComponent(Show, {
         get when() {
@@ -1994,6 +2011,12 @@ export function Browser(props) {
     _$setProp(_el$28, "truncate", true);
     _$setProp(_el$28, "flexGrow", 1);
     _$setProp(_el$28, "minWidth", 0);
+    _$setProp(_el$28, "onMouseUp", event => {
+      if (!options().mouse || event.button !== MouseButton.LEFT) return;
+      if (!navigate() || !navRoot()) return;
+      event.stopPropagation?.();
+      void goUp();
+    });
     _$insert(_el$28, () => context.ui.format.path(props.location().directory), null);
     _$insert(_el$28, (() => {
       var _c$3 = _$memo(() => !!navRoot());
@@ -2124,7 +2147,10 @@ export function Browser(props) {
         _$insertNode(_el$44, _el$45);
         _$setProp(_el$44, "paddingLeft", 1);
         _$setProp(_el$45, "wrapMode", "none");
-        _$insert(_el$45, () => query().trim() ? "No matches" : "(empty)");
+        _$insert(_el$45, (() => {
+          var _c$4 = _$memo(() => !!query().trim());
+          return () => _c$4() ? "No matches" : navigate() && navRoot() ? "empty folder · ← or .. to go up" : "(empty)";
+        })());
         _$effect(_$p => _$setProp(_el$45, "fg", theme.text.muted, _$p));
         return _el$44;
       }
@@ -2160,8 +2186,8 @@ export function Browser(props) {
         _$setProp(_el$47, "truncate", true);
         _$setProp(_el$47, "flexGrow", 1);
         _$insert(_el$47, (() => {
-          var _c$4 = _$memo(() => !!gitState().repo);
-          return () => _c$4() ? `±${gitState().changes.length} changes` : "no repository";
+          var _c$5 = _$memo(() => !!gitState().repo);
+          return () => _c$5() ? `±${gitState().changes.length} changes` : "no repository";
         })());
         _$insertNode(_el$48, _$createTextNode(`ctrl+e`));
         _$setProp(_el$48, "wrapMode", "none");
@@ -2687,8 +2713,8 @@ export function Browser(props) {
     _$insert(_el$78, () => status() ?? (typing() ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help" : focus() === "changes" ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches" : focus() === "editor" ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help" : "↑↓ move · enter open · → expand · ← collapse · tab pane · ctrl+f search · ctrl+e mode · F2 prefs · F1 help"));
     _$setProp(_el$79, "wrapMode", "none");
     _$insert(_el$79, (() => {
-      var _c$5 = _$memo(() => !!simple());
-      return () => _c$5() ? "simple" : `${docs().length} tabs`;
+      var _c$6 = _$memo(() => !!simple());
+      return () => _c$6() ? "simple" : `${docs().length} tabs`;
     })());
     _$insert(_el$77, _$createComponent(Show, {
       get when() {
