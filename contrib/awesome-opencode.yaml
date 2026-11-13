@@ -1,0 +1,40 @@
+# Entry for https://github.com/awesome-opencode/awesome-opencode
+# Submit to data/plugins/opencode-file-browser.yaml once the repo meets rule 5
+# (>= 25 stars and >= 30 days old; created 2026-11-07, so on/after 2026-12-07).
+
+name: OpenCode File Browser
+repo: https://github.com/arthurrogado/opencode-file-browser
+tagline: File browser, editor and git panel for the OpenCode TUI (mini IDE, V2 only)
+description: |
+  A mini IDE inside the OpenCode TUI. Explorer with in-place expansion or
+  file-manager navigation, name/content search, case-sensitive option, tabs,
+  line numbers, syntax colours while editing, save with on-disk conflict
+  checks, unified git diffs, and stage/unstage/discard/commit/pull/push.
+  F2 preferences include a simple mode that keeps the classic list + preview
+  browser. Right click or F10 for new file/folder, rename, delete and tab
+  actions. Huge files show a metadata placeholder instead of freezing the TUI.
+  OpenCode V2 only (validated on 2.2.5).
+
+scope:
+  - global
+  - project
+
+tags:
+  - file-browser
+  - editor
+  - ide
+  - git
+  - tui
+  - markdown
+
+min_version: "2.2.5"
+homepage: https://arthurrogado.github.io/opencode-file-browser/
+
+installation: |
+  ```sh
+  opencode plugin add opencode-file-browser@latest
+  ```
+
+  Restart OpenCode (or run `/reload`). `Ctrl+X F` opens the browser,
+  `Ctrl+X O` opens a file by path, `F1` lists every shortcut and `F2` opens
+  the preferences (including simple mode).
