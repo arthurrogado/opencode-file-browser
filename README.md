@@ -1,8 +1,8 @@
 # OpenCode File Browser
 
-An explorer, editor and git panel for the OpenCode TUI. One plugin, no extra
-terminal: browse the project, edit with syntax colours, review a diff and
-commit without leaving the session.
+**OpenCode Mini IDE** — a file browser, editor and git panel for the OpenCode
+TUI. One plugin, no extra terminal: browse the project, edit with syntax
+colours, review a diff and commit without leaving the session.
 
 [![npm](https://img.shields.io/npm/v/opencode-file-browser?style=flat-square)](https://www.npmjs.com/package/opencode-file-browser)
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
