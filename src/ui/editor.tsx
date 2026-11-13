@@ -1,4 +1,4 @@
-import { Show, createSignal, createEffect, onCleanup } from "solid-js"
+import { Show, createMemo, createSignal, createEffect, onCleanup } from "solid-js"
 import { TextAttributes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import type { ResolvedTheme } from "@opencode/theme/tui"
 import type { Settings } from "../lib/settings.js"
@@ -162,6 +162,14 @@ export function EditorView(props: {
   const [findOpen, setFindOpen] = createSignal(false)
   const [findQuery, setFindQuery] = createSignal("")
   const [findStatus, setFindStatus] = createSignal("")
+  const [hOffset, setHOffset] = createSignal(0)
+  const [hWidth, setHWidth] = createSignal(0)
+  let hbar: any
+  const longest = createMemo(() => {
+    let max = 0
+    for (const line of props.doc.text.split("\n", 5000)) if (line.length > max) max = line.length
+    return max
+  })
 
   onCleanup(() => {
     mounted = false
@@ -177,6 +185,11 @@ export function EditorView(props: {
     if (textarea && !textarea.isDestroyed) {
       setScrollLine(textarea.scrollY)
       setViewport(textarea.height)
+      try {
+        const viewport = textarea.editorView.getViewport()
+        setHOffset(viewport.offsetX)
+        setHWidth(viewport.width)
+      } catch {}
     }
   }
   const timer = setInterval(syncViewport, 100)
@@ -236,6 +249,29 @@ export function EditorView(props: {
     setTimeout(() => {
       syncViewport()
       scheduleHighlight()
+    }, 40)
+  })
+
+  // Turning wrapping on and off reflows the buffer; reset the horizontal
+  // offset so the text never ends up scrolled past the visible area.
+  let lastWrap = props.settings.wrap
+  createEffect(() => {
+    const wrap = props.settings.wrap
+    if (wrap === lastWrap) return
+    lastWrap = wrap
+    const element = textarea
+    if (!element || element.isDestroyed) return
+    setTimeout(() => {
+      try {
+        // Some hosts rebuild the buffer when the wrap mode changes; restore it
+        // from the document if that left the editor blank.
+        if (props.doc.text && !element.plainText) element.editBuffer.setText(props.doc.text)
+        const viewport = element.editorView.getViewport()
+        if (viewport.width > 0 && viewport.height > 0) {
+          element.editorView.setViewport(0, viewport.offsetY, viewport.width, viewport.height, false)
+        }
+        syncViewport()
+      } catch {}
     }, 40)
   })
 
@@ -323,7 +359,7 @@ export function EditorView(props: {
     focusEditor()
   }
 
-  const gutter = () => props.settings.lineNumbers && !(props.editing && props.settings.wrap)
+  const gutter = () => props.settings.lineNumbers && !props.settings.wrap
 
   if (props.doc.oversize) {
     return (
@@ -398,8 +434,9 @@ export function EditorView(props: {
         </box>
       </Show>
 
-      <box flexDirection="row" flexGrow={1} minHeight={0}>
+      <box flexDirection="column" flexGrow={1} minHeight={0}>
         <Show when={props.editing && !props.markdownPreview}>
+          <box flexDirection="row" flexGrow={1} minHeight={0}>
           <Show when={gutter()}>
             <Gutter theme={props.theme} lines={lineCount()} start={scrollLine()} height={viewport()} />
           </Show>
@@ -493,6 +530,41 @@ export function EditorView(props: {
             />
           </box>
           <ScrollBar theme={props.theme} start={scrollLine()} total={lineCount()} viewport={viewport()} height={viewport()} />
+          </box>
+          <Show when={!props.settings.wrap && longest() > hWidth() && hWidth() > 0}>
+            <box height={1} flexShrink={0} flexDirection="row">
+              <box width={gutter() ? gutterWidth(lineCount()) : 0} flexShrink={0} />
+              <box
+                ref={(element: any) => (hbar = element)}
+                flexGrow={1}
+                onMouseUp={(event: any) => {
+                  if (event.button !== 0 || !hbar || !textarea || textarea.isDestroyed) return
+                  event.stopPropagation?.()
+                  const width = Math.max(1, hbar.width)
+                  const x = Math.max(0, Math.min(width, event.x - hbar.screenX))
+                  const span = Math.max(0, longest() - hWidth())
+                  const target = Math.round((x / width) * span)
+                  try {
+                    const viewport = textarea.editorView.getViewport()
+                    textarea.editorView.setViewport(target, viewport.offsetY, viewport.width, viewport.height, false)
+                    syncViewport()
+                  } catch {}
+                }}
+              >
+                <text fg={props.theme.text.feedback.info.base} wrapMode="none" selectable={false}>
+                  {(() => {
+                    const width = Math.max(1, hbar?.width ?? hWidth())
+                    const total = Math.max(1, longest())
+                    const visible = Math.max(1, hWidth())
+                    const thumb = Math.max(1, Math.round((visible / total) * width))
+                    const span = Math.max(1, total - visible)
+                    const at = Math.round((Math.min(span, hOffset()) / span) * (width - thumb))
+                    return "░".repeat(Math.max(0, at)) + "█".repeat(thumb) + "░".repeat(Math.max(0, width - at - thumb))
+                  })()}
+                </text>
+              </box>
+            </box>
+          </Show>
         </Show>
 
         <Show when={!props.editing || props.markdownPreview}>
@@ -509,6 +581,8 @@ export function EditorView(props: {
                     }}
                     flexGrow={1}
                     minHeight={0}
+                    scrollX={!props.settings.wrap}
+                    horizontalScrollbarOptions={{ visible: !props.settings.wrap }}
                     verticalScrollbarOptions={{ visible: true }}
                     onMouseScroll={() => setTimeout(syncViewport, 0)}
                   >
@@ -521,7 +595,7 @@ export function EditorView(props: {
                         </box>
                       </Show>
                       <box flexGrow={1} minWidth={0}>
-                        <code content={props.doc.text} filetype={props.doc.type} syntaxStyle={props.syntax} wrapMode="none" />
+                        <code content={props.doc.text} filetype={props.doc.type} syntaxStyle={props.syntax} wrapMode={props.settings.wrap ? "word" : "none"} />
                       </box>
                     </box>
                   </scrollbox>

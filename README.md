@@ -33,6 +33,9 @@ For local development point that entry at a checkout instead:
   mouse cursor placement.
 - **Changes** — stage, unstage, discard, commit, pull, push, branches and
   history. `Enter` opens a unified diff; `F4` jumps to the real file.
+- **Context menu** — right click a file to copy, move (with a folder picker that
+  can go up), rename or delete; right click empty space to create a file or
+  folder, or paste a copy. `F10` opens the same menu from the keyboard.
 - **Preferences** — `F2`: simple mode, line numbers, wrap, folder behaviour,
   panel preview, changes panel, hidden files, mouse, search target,
   case-sensitive search and confirmation prompts.
@@ -66,6 +69,7 @@ For local development point that entry at a checkout instead:
 | `F3` / `Ctrl+G` | focus the changes panel |
 | `F5` | reload tree, file and git status |
 | `F10` | item actions (same menu as right click) |
+| right click (empty space) | new file / new folder / paste |
 | `r` / `h` / `f` | reload / hidden files / fullscreen |
 | `Esc` | leave editor → clear search → close |
 

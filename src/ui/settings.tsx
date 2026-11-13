@@ -13,10 +13,10 @@ type Row = {
 
 const ROWS: readonly Row[] = [
   { key: "simple", label: "Simple mode", hint: "classic list + preview only", kind: "toggle" },
-  { key: "lineNumbers", label: "Line numbers", hint: "gutter in viewer and editor", kind: "toggle" },
-  { key: "wrap", label: "Wrap lines", hint: "wrap while editing", kind: "toggle" },
+  { key: "lineNumbers", label: "Line numbers", hint: "line numbers in viewer and editor", kind: "toggle" },
+  { key: "wrap", label: "Wrap lines", hint: "wrap text (hides line numbers)", kind: "toggle" },
   { key: "tree", label: "Folders", hint: "expand in place or navigate into", kind: "choice", values: ["expand", "navigate"] },
-  { key: "panelPreview", label: "Panel preview", hint: "preview in session panel", kind: "toggle" },
+  { key: "panelPreview", label: "Panel preview", hint: "preview inside the session panel", kind: "toggle" },
   { key: "changes", label: "Changes panel", hint: "git stage, commit, push", kind: "toggle" },
   { key: "hidden", label: "Hidden files", hint: "list dotfiles", kind: "toggle" },
   { key: "mouse", label: "Mouse", hint: "click, scroll and drag", kind: "toggle" },
@@ -126,11 +126,10 @@ export function SettingsDialog(props: {
       <For each={ROWS}>
         {(row, position) => (
           <box
-            flexDirection="row"
-            height={1}
+            flexDirection="column"
+            height={2}
             paddingLeft={1}
             paddingRight={1}
-            gap={1}
             backgroundColor={position() === index() ? theme.background.raised.max : theme.background.base}
             onMouseUp={(event: any) => {
               if (event.button !== MouseButton.LEFT || !draft().mouse) return
@@ -139,24 +138,25 @@ export function SettingsDialog(props: {
               cycle(row)
             }}
           >
-            <text
-              fg={position() === index() ? theme.text.action.primary.selected : theme.text.base}
-              wrapMode="none"
-              width={18}
-              flexShrink={0}
-            >
-              {(position() === index() ? "› " : "  ") + row.label}
-            </text>
-            <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+            <box flexDirection="row" gap={1}>
+              <text
+                fg={position() === index() ? theme.text.action.primary.selected : theme.text.base}
+                wrapMode="none"
+                flexGrow={1}
+                truncate
+              >
+                {(position() === index() ? "› " : "  ") + row.label}
+              </text>
+              <text
+                fg={draft()[row.key] === DEFAULTS[row.key] ? theme.text.muted : theme.text.feedback.success.base}
+                wrapMode="none"
+                flexShrink={0}
+              >
+                {row.kind === "choice" ? `‹ ${label(row)} ›` : label(row)}
+              </text>
+            </box>
+            <text fg={theme.text.muted} wrapMode="none" truncate paddingLeft={2}>
               {row.hint}
-            </text>
-            <text
-              fg={draft()[row.key] === DEFAULTS[row.key] ? theme.text.muted : theme.text.feedback.success.base}
-              wrapMode="none"
-              width={13}
-              flexShrink={0}
-            >
-              {row.kind === "choice" ? `‹ ${label(row)} ›` : label(row)}
             </text>
           </box>
         )}

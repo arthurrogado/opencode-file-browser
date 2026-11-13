@@ -5,7 +5,8 @@ import { MouseButton, SyntaxStyle, TextAttributes, type ScrollBoxRenderable, typ
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { ErrorBoundary, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import path from "node:path"
-import { mkdir, readFile, rename as renameFile, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, rename as renameFile, rm, stat, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import {
   HEAVY_CHARS,
   HEAVY_LINES,
@@ -155,6 +156,15 @@ export function Browser(props: {
   const [pendingLine, setPendingLine] = createSignal(0)
   const [drag, setDrag] = createSignal<{ active: boolean; width: number }>({ active: false, width: 0 })
   const [splitWidth, setSplitWidth] = createSignal(0)
+  const [clipboard, setClipboard] = createSignal<string>()
+  const [statusTimer, setStatusTimer] = createSignal<ReturnType<typeof setTimeout>>()
+  createEffect(() => {
+    const value = status()
+    if (!value) return
+    const previous = statusTimer()
+    if (previous) clearTimeout(previous)
+    setStatusTimer(setTimeout(() => setStatus(undefined), 6000))
+  })
   let searchInput: InputRenderable | undefined
   let commitInput: InputRenderable | undefined
   let editorApi: { newline: () => void } | undefined
@@ -807,7 +817,7 @@ export function Browser(props: {
   }
 
   function openSettings() {
-    context.ui.dialog.set({ size: "large" })
+    context.ui.dialog.set({ size: "xlarge" })
     context.ui.dialog.show(
       () => (
         <SettingsDialog
@@ -906,16 +916,90 @@ export function Browser(props: {
     setActive(keep ? 0 : -1)
   }
 
-  async function openContext(kind: "tree" | "tab", target?: Row | Doc) {
+  async function pickDirectory(start: string, title: string): Promise<string | undefined> {
+    const items = dirs()[start] ?? (await loadDirectory(start).catch(() => []))
+    const options = [
+      { title: "✓ Use this folder", value: "__here" },
+      ...(start ? [{ title: "↰ .. (up)", value: "__up" }] : []),
+      ...items.filter((entry) => entry.type === "directory").map((entry) => ({
+        title: `▸ ${basename(entry.path)}/`,
+        value: entry.path,
+      })),
+    ]
+    const choice = await context.ui.dialog.select<string>({
+      title: `${title} · ${start || "/"}`,
+      options,
+    })
+    if (!choice) return undefined
+    if (choice === "__here") return start
+    if (choice === "__up") return pickDirectory(parentOf(start), title)
+    return pickDirectory(choice, title)
+  }
+
+  async function moveEntry(row: Row, target: string) {
+    const destination = target ? `${target}/${basename(row.path)}` : basename(row.path)
+    if (destination === row.path) return
+    try {
+      if (existsSync(absolute(destination))) {
+        const ok = await context.ui.dialog.confirm({
+          title: "Overwrite",
+          message: `${destination} already exists. Replace it?`,
+          label: { confirm: "Replace", cancel: "Cancel" },
+        })
+        if (!ok) return
+        await rm(absolute(destination), { recursive: true, force: true })
+      }
+      await renameFile(absolute(row.path), absolute(destination))
+      dropDocs((item) => item.path === row.path || item.path.startsWith(`${row.path}/`) || item.rawPath === row.path)
+      await refreshDirectory(parentOf(row.path))
+      await refreshDirectory(target)
+      setStatus(`Moved to ${destination}`)
+    } catch (cause) {
+      setStatus(`Move failed: ${message(cause)}`)
+    }
+  }
+
+  async function pasteInto(target: string) {
+    const source = clipboard()
+    if (!source) return
+    const destination = target ? `${target}/${basename(source)}` : basename(source)
+    if (destination === source) return
+    try {
+      if (existsSync(absolute(destination))) {
+        const ok = await context.ui.dialog.confirm({
+          title: "Overwrite",
+          message: `${destination} already exists. Replace it?`,
+          label: { confirm: "Replace", cancel: "Cancel" },
+        })
+        if (!ok) return
+        await rm(absolute(destination), { recursive: true, force: true })
+      }
+      await copyFile(absolute(source), absolute(destination))
+      await refreshDirectory(target)
+      setStatus(`Pasted into ${target || "the project root"}`)
+    } catch (cause) {
+      setStatus(`Paste failed: ${message(cause)}`)
+    }
+  }
+
+  async function openContext(kind: "tree" | "tab", target?: Row | Doc, baseOverride?: string) {
     const row = kind === "tree" ? (target as Row | undefined) : undefined
     const tabDoc = kind === "tab" ? (target as Doc | undefined) ?? doc() : doc()
-    const base = row ? (row.type === "directory" ? row.path : parentOf(row.path)) : parentOf(tabDoc?.path ?? "")
+    const base = baseOverride ?? (row ? (row.type === "directory" ? row.path : parentOf(row.path)) : navigate() ? navRoot() : "")
     const targetDoc = row && row.type !== "directory" ? docs().find((item) => item.path === row.path) : tabDoc
+    const pasteTarget = !row || row.type === "directory"
     const treeOptions = [
       { title: "New file…", value: "new-file" },
       { title: "New folder…", value: "new-folder" },
-      { title: "Rename…", value: "rename", disabled: !row },
-      { title: "Delete…", value: "delete", disabled: !row },
+      ...(row && row.type !== "hit" && !row.parent
+        ? [
+            { title: "Copy", value: "copy" },
+            { title: "Move to…", value: "move" },
+          ]
+        : []),
+      ...(clipboard() && pasteTarget ? [{ title: `Paste ${basename(clipboard()!)} here`, value: "paste" }] : []),
+      { title: "Rename…", value: "rename", disabled: !row || row.parent },
+      { title: "Delete…", value: "delete", disabled: !row || row.parent },
       { title: `Close tab${targetDoc ? ` (${basename(targetDoc.path)})` : ""}`, value: "close-tab", disabled: !targetDoc },
       { title: "Close other tabs", value: "close-others" },
       { title: "Close all tabs", value: "close-all" },
@@ -938,6 +1022,22 @@ export function Browser(props: {
     }
     if (choice === "close-others") return closeMany("others")
     if (choice === "close-all") return closeMany("all")
+
+    if (choice === "copy" && row) {
+      setClipboard(row.path)
+      setStatus(`Copied ${row.path} — paste it from the target folder`)
+      return
+    }
+    if (choice === "paste") {
+      await pasteInto(base)
+      return
+    }
+    if (choice === "move" && row) {
+      const target = await pickDirectory(parentOf(row.path), `Move ${basename(row.path)}`)
+      if (target === undefined) return
+      await moveEntry(row, target)
+      return
+    }
 
     if (choice === "new-file" || choice === "new-folder") {
       const name = await context.ui.dialog.prompt({
@@ -1473,13 +1573,19 @@ export function Browser(props: {
           event.stopPropagation()
           setFocus("explorer")
           setIndex(rowProps.position)
-          const row = rowProps.row
-          if (row.type === "directory") void toggleDirectory(row)
-          else void openRow(row)
+          void openRow(rowProps.row)
         }}
       >
         <text fg={icon().color} wrapMode="none" selectable={false} flexShrink={0}>
-          {rowProps.row.parent ? "↰ " : rowProps.row.type === "directory" ? (isOpen() ? "▾ " : "▸ ") : `${icon().glyph} `}
+          {rowProps.row.parent
+            ? "↰ "
+            : rowProps.row.type === "directory"
+              ? navigate()
+                ? "▸ "
+                : isOpen()
+                  ? "▾ "
+                  : "▸ "
+              : `${icon().glyph} `}
         </text>
         <text
           fg={
@@ -1676,6 +1782,12 @@ export function Browser(props: {
             flexGrow={1}
             minHeight={0}
             verticalScrollbarOptions={{ visible: true }}
+            onMouseUp={(event: any) => {
+              if (!options().mouse || event.button !== MouseButton.RIGHT) return
+              event.stopPropagation?.()
+              setFocus("explorer")
+              void openContext("tree", undefined, navigate() ? navRoot() : "")
+            }}
           >
             <Show when={error()}>
               <text fg={theme.text.feedback.error.base} paddingLeft={1} wrapMode="word">
@@ -1899,17 +2011,25 @@ export function Browser(props: {
         </Show>
       </box>
 
+      {/* Transient status keeps the shortcut footer visible at all times. */}
+      <Show when={status()}>
+        <box height={1} flexShrink={0} paddingLeft={docked() ? 2 : 1} paddingRight={2}>
+          <text fg={theme.text.feedback.info.base} wrapMode="none" truncate>
+            {status()}
+          </text>
+        </box>
+      </Show>
+
       {/* Footer */}
       <box height={1} flexShrink={0} paddingLeft={docked() ? 2 : 1} paddingRight={2} flexDirection="row" gap={1}>
         <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1}>
-          {status() ??
-            (typing()
+          {(typing()
               ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help"
               : focus() === "changes"
                 ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches"
                 : focus() === "editor"
                   ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help"
-                  : "↑↓ move · enter open · → expand · ← collapse · tab pane · ctrl+f search · ctrl+e mode · F2 prefs · F1 help")}
+                  : "↑↓ move · enter open · right click actions · tab pane · ctrl+f search · F2 prefs · F1 help")}
         </text>
         <text fg={theme.text.muted} wrapMode="none">
           {simple() ? "simple" : `${docs().length} tabs`}

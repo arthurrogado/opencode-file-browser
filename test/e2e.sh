@@ -131,6 +131,9 @@ else
   say "FAIL  save wrote the edited buffer ($(disk "$FIX/src/app.ts"))"
   fail=$((fail + 1))
 fi
+send C-g
+sleep 1
+wait_for "M src/app.ts" 30 || true
 expect "git sees the modification" "M src/app.ts"
 
 say "== focus round-trip: leave the editor and come back"
@@ -235,7 +238,7 @@ expect "navigate mode shows the folder in the header" "/proj/src"
 expect "navigate mode lists the folder contents" "app.ts"
 send Backspace
 sleep 1
-expect "backspace returns to the project root" "3 items"
+expect "backspace returns to the project root" "4 items"
 send F2
 sleep 1.1
 send Home

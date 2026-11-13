@@ -7,7 +7,7 @@ import { insertNode as _$insertNode } from "@opentui/solid";
 import { insert as _$insert } from "@opentui/solid";
 import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
-import { Show, createSignal, createEffect, onCleanup } from "solid-js";
+import { Show, createMemo, createSignal, createEffect, onCleanup } from "solid-js";
 import { TextAttributes } from "@opentui/core";
 export const isDirty = doc => doc.diff ? false : doc.text !== doc.original;
 const gutterWidth = lines => Math.max(4, String(lines).length + 2);
@@ -136,6 +136,14 @@ export function EditorView(props) {
   const [findOpen, setFindOpen] = createSignal(false);
   const [findQuery, setFindQuery] = createSignal("");
   const [findStatus, setFindStatus] = createSignal("");
+  const [hOffset, setHOffset] = createSignal(0);
+  const [hWidth, setHWidth] = createSignal(0);
+  let hbar;
+  const longest = createMemo(() => {
+    let max = 0;
+    for (const line of props.doc.text.split("\n", 5000)) if (line.length > max) max = line.length;
+    return max;
+  });
   onCleanup(() => {
     mounted = false;
     clearInterval(timer);
@@ -148,6 +156,11 @@ export function EditorView(props) {
     if (textarea && !textarea.isDestroyed) {
       setScrollLine(textarea.scrollY);
       setViewport(textarea.height);
+      try {
+        const viewport = textarea.editorView.getViewport();
+        setHOffset(viewport.offsetX);
+        setHWidth(viewport.width);
+      } catch {}
     }
   };
   const timer = setInterval(syncViewport, 100);
@@ -207,6 +220,29 @@ export function EditorView(props) {
     setTimeout(() => {
       syncViewport();
       scheduleHighlight();
+    }, 40);
+  });
+
+  // Turning wrapping on and off reflows the buffer; reset the horizontal
+  // offset so the text never ends up scrolled past the visible area.
+  let lastWrap = props.settings.wrap;
+  createEffect(() => {
+    const wrap = props.settings.wrap;
+    if (wrap === lastWrap) return;
+    lastWrap = wrap;
+    const element = textarea;
+    if (!element || element.isDestroyed) return;
+    setTimeout(() => {
+      try {
+        // Some hosts rebuild the buffer when the wrap mode changes; restore it
+        // from the document if that left the editor blank.
+        if (props.doc.text && !element.plainText) element.editBuffer.setText(props.doc.text);
+        const viewport = element.editorView.getViewport();
+        if (viewport.width > 0 && viewport.height > 0) {
+          element.editorView.setViewport(0, viewport.offsetY, viewport.width, viewport.height, false);
+        }
+        syncViewport();
+      } catch {}
     }, 40);
   });
 
@@ -296,7 +332,7 @@ export function EditorView(props) {
     setFindStatus("");
     focusEditor();
   }
-  const gutter = () => props.settings.lineNumbers && !(props.editing && props.settings.wrap);
+  const gutter = () => props.settings.lineNumbers && !props.settings.wrap;
   if (props.doc.oversize) {
     return (() => {
       var _el$5 = _$createElement("box"),
@@ -342,16 +378,16 @@ export function EditorView(props) {
   return (() => {
     var _el$10 = _$createElement("box"),
       _el$22 = _$createElement("box"),
-      _el$31 = _$createElement("box"),
-      _el$32 = _$createElement("text"),
-      _el$33 = _$createElement("text"),
-      _el$34 = _$createElement("text"),
-      _el$35 = _$createTextNode(`Ln `),
-      _el$36 = _$createTextNode(`, Col `),
+      _el$36 = _$createElement("box"),
       _el$37 = _$createElement("text"),
-      _el$38 = _$createElement("text");
+      _el$38 = _$createElement("text"),
+      _el$39 = _$createElement("text"),
+      _el$40 = _$createTextNode(`Ln `),
+      _el$41 = _$createTextNode(`, Col `),
+      _el$42 = _$createElement("text"),
+      _el$43 = _$createElement("text");
     _$insertNode(_el$10, _el$22);
-    _$insertNode(_el$10, _el$31);
+    _$insertNode(_el$10, _el$36);
     _$setProp(_el$10, "flexDirection", "column");
     _$setProp(_el$10, "flexGrow", 1);
     _$setProp(_el$10, "minHeight", 0);
@@ -467,7 +503,7 @@ export function EditorView(props) {
         return _el$17;
       }
     }), _el$22);
-    _$setProp(_el$22, "flexDirection", "row");
+    _$setProp(_el$22, "flexDirection", "column");
     _$setProp(_el$22, "flexGrow", 1);
     _$setProp(_el$22, "minHeight", 0);
     _$insert(_el$22, _$createComponent(Show, {
@@ -475,33 +511,39 @@ export function EditorView(props) {
         return _$memo(() => !!props.editing)() && !props.markdownPreview;
       },
       get children() {
-        return [_$createComponent(Show, {
-          get when() {
-            return gutter();
-          },
-          get children() {
-            return _$createComponent(Gutter, {
-              get theme() {
-                return props.theme;
-              },
-              get lines() {
-                return lineCount();
-              },
-              get start() {
-                return scrollLine();
-              },
-              get height() {
-                return viewport();
-              }
-            });
-          }
-        }), (() => {
+        return [(() => {
           var _el$23 = _$createElement("box"),
-            _el$24 = _$createElement("textarea");
+            _el$24 = _$createElement("box"),
+            _el$25 = _$createElement("textarea");
           _$insertNode(_el$23, _el$24);
+          _$setProp(_el$23, "flexDirection", "row");
           _$setProp(_el$23, "flexGrow", 1);
-          _$setProp(_el$23, "minWidth", 0);
           _$setProp(_el$23, "minHeight", 0);
+          _$insert(_el$23, _$createComponent(Show, {
+            get when() {
+              return gutter();
+            },
+            get children() {
+              return _$createComponent(Gutter, {
+                get theme() {
+                  return props.theme;
+                },
+                get lines() {
+                  return lineCount();
+                },
+                get start() {
+                  return scrollLine();
+                },
+                get height() {
+                  return viewport();
+                }
+              });
+            }
+          }), _el$24);
+          _$insertNode(_el$24, _el$25);
+          _$setProp(_el$24, "flexGrow", 1);
+          _$setProp(_el$24, "minWidth", 0);
+          _$setProp(_el$24, "minHeight", 0);
           _$use(element => {
             textarea = element;
             props.onReady?.({
@@ -520,8 +562,8 @@ export function EditorView(props) {
               scheduleHighlight();
               syncViewport();
             }, 30);
-          }, _el$24);
-          _$setProp(_el$24, "onContentChange", () => {
+          }, _el$25);
+          _$setProp(_el$25, "onContentChange", () => {
             if (!textarea || textarea.isDestroyed) return;
             const next = textarea.plainText;
             if (next === "" && props.doc.text !== "") return;
@@ -529,7 +571,7 @@ export function EditorView(props) {
             scheduleHighlight();
             syncViewport();
           });
-          _$setProp(_el$24, "onCursorChange", event => {
+          _$setProp(_el$25, "onCursorChange", event => {
             setCursor({
               line: event.line + 1,
               column: event.visualColumn + 1
@@ -537,7 +579,7 @@ export function EditorView(props) {
             props.onCursor(event.line + 1, event.visualColumn + 1);
             syncViewport();
           });
-          _$setProp(_el$24, "onKeyDown", event => {
+          _$setProp(_el$25, "onKeyDown", event => {
             // A key that opened this document can still be dispatched after
             // the textarea mounts; don't let it land in the buffer.
             if (Date.now() - mountedAt < 120) {
@@ -569,7 +611,7 @@ export function EditorView(props) {
             event.stopPropagation?.();
             if (key === "escape" || key === "tab") textarea?.blur();
           });
-          _$setProp(_el$24, "onMouseDown", event => {
+          _$setProp(_el$25, "onMouseDown", event => {
             if (event.button !== 0) return;
             event.stopPropagation?.();
             const element = textarea;
@@ -582,7 +624,24 @@ export function EditorView(props) {
               syncViewport();
             } catch {}
           });
-          _$setProp(_el$24, "onMouseScroll", () => setTimeout(syncViewport, 0));
+          _$setProp(_el$25, "onMouseScroll", () => setTimeout(syncViewport, 0));
+          _$insert(_el$23, _$createComponent(ScrollBar, {
+            get theme() {
+              return props.theme;
+            },
+            get start() {
+              return scrollLine();
+            },
+            get total() {
+              return lineCount();
+            },
+            get viewport() {
+              return viewport();
+            },
+            get height() {
+              return viewport();
+            }
+          }), null);
           _$effect(_p$ => {
             var _v$13 = props.doc.text,
               _v$14 = props.syntax,
@@ -591,13 +650,13 @@ export function EditorView(props) {
               _v$17 = props.theme.text.base,
               _v$18 = props.theme.text.base,
               _v$19 = props.theme.background.base;
-            _v$13 !== _p$.e && (_p$.e = _$setProp(_el$24, "initialValue", _v$13, _p$.e));
-            _v$14 !== _p$.t && (_p$.t = _$setProp(_el$24, "syntaxStyle", _v$14, _p$.t));
-            _v$15 !== _p$.a && (_p$.a = _$setProp(_el$24, "wrapMode", _v$15, _p$.a));
-            _v$16 !== _p$.o && (_p$.o = _$setProp(_el$24, "backgroundColor", _v$16, _p$.o));
-            _v$17 !== _p$.i && (_p$.i = _$setProp(_el$24, "textColor", _v$17, _p$.i));
-            _v$18 !== _p$.n && (_p$.n = _$setProp(_el$24, "focusedTextColor", _v$18, _p$.n));
-            _v$19 !== _p$.s && (_p$.s = _$setProp(_el$24, "focusedBackgroundColor", _v$19, _p$.s));
+            _v$13 !== _p$.e && (_p$.e = _$setProp(_el$25, "initialValue", _v$13, _p$.e));
+            _v$14 !== _p$.t && (_p$.t = _$setProp(_el$25, "syntaxStyle", _v$14, _p$.t));
+            _v$15 !== _p$.a && (_p$.a = _$setProp(_el$25, "wrapMode", _v$15, _p$.a));
+            _v$16 !== _p$.o && (_p$.o = _$setProp(_el$25, "backgroundColor", _v$16, _p$.o));
+            _v$17 !== _p$.i && (_p$.i = _$setProp(_el$25, "textColor", _v$17, _p$.i));
+            _v$18 !== _p$.n && (_p$.n = _$setProp(_el$25, "focusedTextColor", _v$18, _p$.n));
+            _v$19 !== _p$.s && (_p$.s = _$setProp(_el$25, "focusedBackgroundColor", _v$19, _p$.s));
             return _p$;
           }, {
             e: undefined,
@@ -609,21 +668,59 @@ export function EditorView(props) {
             s: undefined
           });
           return _el$23;
-        })(), _$createComponent(ScrollBar, {
-          get theme() {
-            return props.theme;
+        })(), _$createComponent(Show, {
+          get when() {
+            return _$memo(() => !!(!props.settings.wrap && longest() > hWidth()))() && hWidth() > 0;
           },
-          get start() {
-            return scrollLine();
-          },
-          get total() {
-            return lineCount();
-          },
-          get viewport() {
-            return viewport();
-          },
-          get height() {
-            return viewport();
+          get children() {
+            var _el$26 = _$createElement("box"),
+              _el$27 = _$createElement("box"),
+              _el$28 = _$createElement("box"),
+              _el$29 = _$createElement("text");
+            _$insertNode(_el$26, _el$27);
+            _$insertNode(_el$26, _el$28);
+            _$setProp(_el$26, "height", 1);
+            _$setProp(_el$26, "flexShrink", 0);
+            _$setProp(_el$26, "flexDirection", "row");
+            _$setProp(_el$27, "flexShrink", 0);
+            _$insertNode(_el$28, _el$29);
+            _$use(element => hbar = element, _el$28);
+            _$setProp(_el$28, "flexGrow", 1);
+            _$setProp(_el$28, "onMouseUp", event => {
+              if (event.button !== 0 || !hbar || !textarea || textarea.isDestroyed) return;
+              event.stopPropagation?.();
+              const width = Math.max(1, hbar.width);
+              const x = Math.max(0, Math.min(width, event.x - hbar.screenX));
+              const span = Math.max(0, longest() - hWidth());
+              const target = Math.round(x / width * span);
+              try {
+                const viewport = textarea.editorView.getViewport();
+                textarea.editorView.setViewport(target, viewport.offsetY, viewport.width, viewport.height, false);
+                syncViewport();
+              } catch {}
+            });
+            _$setProp(_el$29, "wrapMode", "none");
+            _$setProp(_el$29, "selectable", false);
+            _$insert(_el$29, () => {
+              const width = Math.max(1, hbar?.width ?? hWidth());
+              const total = Math.max(1, longest());
+              const visible = Math.max(1, hWidth());
+              const thumb = Math.max(1, Math.round(visible / total * width));
+              const span = Math.max(1, total - visible);
+              const at = Math.round(Math.min(span, hOffset()) / span * (width - thumb));
+              return "░".repeat(Math.max(0, at)) + "█".repeat(thumb) + "░".repeat(Math.max(0, width - at - thumb));
+            });
+            _$effect(_p$ => {
+              var _v$20 = gutter() ? gutterWidth(lineCount()) : 0,
+                _v$21 = props.theme.text.feedback.info.base;
+              _v$20 !== _p$.e && (_p$.e = _$setProp(_el$27, "width", _v$20, _p$.e));
+              _v$21 !== _p$.t && (_p$.t = _$setProp(_el$29, "fg", _v$21, _p$.t));
+              return _p$;
+            }, {
+              e: undefined,
+              t: undefined
+            });
+            return _el$26;
           }
         })];
       }
@@ -644,124 +741,134 @@ export function EditorView(props) {
               },
               get fallback() {
                 return (() => {
-                  var _el$43 = _$createElement("scrollbox"),
-                    _el$44 = _$createElement("box"),
-                    _el$47 = _$createElement("box"),
-                    _el$48 = _$createElement("code");
-                  _$insertNode(_el$43, _el$44);
+                  var _el$48 = _$createElement("scrollbox"),
+                    _el$49 = _$createElement("box"),
+                    _el$52 = _$createElement("box"),
+                    _el$53 = _$createElement("code");
+                  _$insertNode(_el$48, _el$49);
                   _$use(element => {
                     contentScroll = element;
                     setTimeout(syncViewport, 30);
-                  }, _el$43);
-                  _$setProp(_el$43, "flexGrow", 1);
-                  _$setProp(_el$43, "minHeight", 0);
-                  _$setProp(_el$43, "verticalScrollbarOptions", {
+                  }, _el$48);
+                  _$setProp(_el$48, "flexGrow", 1);
+                  _$setProp(_el$48, "minHeight", 0);
+                  _$setProp(_el$48, "verticalScrollbarOptions", {
                     visible: true
                   });
-                  _$setProp(_el$43, "onMouseScroll", () => setTimeout(syncViewport, 0));
-                  _$insertNode(_el$44, _el$47);
-                  _$setProp(_el$44, "flexDirection", "row");
-                  _$setProp(_el$44, "flexShrink", 0);
-                  _$insert(_el$44, _$createComponent(Show, {
+                  _$setProp(_el$48, "onMouseScroll", () => setTimeout(syncViewport, 0));
+                  _$insertNode(_el$49, _el$52);
+                  _$setProp(_el$49, "flexDirection", "row");
+                  _$setProp(_el$49, "flexShrink", 0);
+                  _$insert(_el$49, _$createComponent(Show, {
                     get when() {
                       return gutter();
                     },
                     get children() {
-                      var _el$45 = _$createElement("box"),
-                        _el$46 = _$createElement("text");
-                      _$insertNode(_el$45, _el$46);
-                      _$setProp(_el$45, "flexShrink", 0);
-                      _$setProp(_el$45, "flexDirection", "column");
-                      _$setProp(_el$46, "wrapMode", "none");
-                      _$setProp(_el$46, "selectable", false);
-                      _$insert(_el$46, () => Array.from({
+                      var _el$50 = _$createElement("box"),
+                        _el$51 = _$createElement("text");
+                      _$insertNode(_el$50, _el$51);
+                      _$setProp(_el$50, "flexShrink", 0);
+                      _$setProp(_el$50, "flexDirection", "column");
+                      _$setProp(_el$51, "wrapMode", "none");
+                      _$setProp(_el$51, "selectable", false);
+                      _$insert(_el$51, () => Array.from({
                         length: lineCount()
                       }, (_, index) => String(index + 1).padStart(gutterWidth(lineCount()) - 1, " ") + " ").join("\n"));
                       _$effect(_p$ => {
-                        var _v$32 = gutterWidth(lineCount()),
-                          _v$33 = props.theme.text.muted;
-                        _v$32 !== _p$.e && (_p$.e = _$setProp(_el$45, "width", _v$32, _p$.e));
-                        _v$33 !== _p$.t && (_p$.t = _$setProp(_el$46, "fg", _v$33, _p$.t));
+                        var _v$34 = gutterWidth(lineCount()),
+                          _v$35 = props.theme.text.muted;
+                        _v$34 !== _p$.e && (_p$.e = _$setProp(_el$50, "width", _v$34, _p$.e));
+                        _v$35 !== _p$.t && (_p$.t = _$setProp(_el$51, "fg", _v$35, _p$.t));
                         return _p$;
                       }, {
                         e: undefined,
                         t: undefined
                       });
-                      return _el$45;
+                      return _el$50;
                     }
-                  }), _el$47);
-                  _$insertNode(_el$47, _el$48);
-                  _$setProp(_el$47, "flexGrow", 1);
-                  _$setProp(_el$47, "minWidth", 0);
-                  _$setProp(_el$48, "wrapMode", "none");
+                  }), _el$52);
+                  _$insertNode(_el$52, _el$53);
+                  _$setProp(_el$52, "flexGrow", 1);
+                  _$setProp(_el$52, "minWidth", 0);
                   _$effect(_p$ => {
-                    var _v$34 = props.doc.text,
-                      _v$35 = props.doc.type,
-                      _v$36 = props.syntax;
-                    _v$34 !== _p$.e && (_p$.e = _$setProp(_el$48, "content", _v$34, _p$.e));
-                    _v$35 !== _p$.t && (_p$.t = _$setProp(_el$48, "filetype", _v$35, _p$.t));
-                    _v$36 !== _p$.a && (_p$.a = _$setProp(_el$48, "syntaxStyle", _v$36, _p$.a));
+                    var _v$36 = !props.settings.wrap,
+                      _v$37 = {
+                        visible: !props.settings.wrap
+                      },
+                      _v$38 = props.doc.text,
+                      _v$39 = props.doc.type,
+                      _v$40 = props.syntax,
+                      _v$41 = props.settings.wrap ? "word" : "none";
+                    _v$36 !== _p$.e && (_p$.e = _$setProp(_el$48, "scrollX", _v$36, _p$.e));
+                    _v$37 !== _p$.t && (_p$.t = _$setProp(_el$48, "horizontalScrollbarOptions", _v$37, _p$.t));
+                    _v$38 !== _p$.a && (_p$.a = _$setProp(_el$53, "content", _v$38, _p$.a));
+                    _v$39 !== _p$.o && (_p$.o = _$setProp(_el$53, "filetype", _v$39, _p$.o));
+                    _v$40 !== _p$.i && (_p$.i = _$setProp(_el$53, "syntaxStyle", _v$40, _p$.i));
+                    _v$41 !== _p$.n && (_p$.n = _$setProp(_el$53, "wrapMode", _v$41, _p$.n));
                     return _p$;
                   }, {
                     e: undefined,
                     t: undefined,
-                    a: undefined
+                    a: undefined,
+                    o: undefined,
+                    i: undefined,
+                    n: undefined
                   });
-                  return _el$43;
+                  return _el$48;
                 })();
               },
               get children() {
-                var _el$41 = _$createElement("scrollbox"),
-                  _el$42 = _$createElement("diff");
-                _$insertNode(_el$41, _el$42);
-                _$setProp(_el$41, "flexGrow", 1);
-                _$setProp(_el$41, "minHeight", 0);
-                _$setProp(_el$41, "verticalScrollbarOptions", {
+                var _el$46 = _$createElement("scrollbox"),
+                  _el$47 = _$createElement("diff");
+                _$insertNode(_el$46, _el$47);
+                _$setProp(_el$46, "flexGrow", 1);
+                _$setProp(_el$46, "minHeight", 0);
+                _$setProp(_el$46, "verticalScrollbarOptions", {
                   visible: true
                 });
-                _$setProp(_el$42, "view", "unified");
-                _$setProp(_el$42, "wrapMode", "none");
+                _$setProp(_el$47, "view", "unified");
+                _$setProp(_el$47, "wrapMode", "none");
                 _$effect(_p$ => {
-                  var _v$29 = props.doc.text,
-                    _v$30 = props.doc.type,
-                    _v$31 = props.syntax;
-                  _v$29 !== _p$.e && (_p$.e = _$setProp(_el$42, "diff", _v$29, _p$.e));
-                  _v$30 !== _p$.t && (_p$.t = _$setProp(_el$42, "filetype", _v$30, _p$.t));
-                  _v$31 !== _p$.a && (_p$.a = _$setProp(_el$42, "syntaxStyle", _v$31, _p$.a));
+                  var _v$31 = props.doc.text,
+                    _v$32 = props.doc.type,
+                    _v$33 = props.syntax;
+                  _v$31 !== _p$.e && (_p$.e = _$setProp(_el$47, "diff", _v$31, _p$.e));
+                  _v$32 !== _p$.t && (_p$.t = _$setProp(_el$47, "filetype", _v$32, _p$.t));
+                  _v$33 !== _p$.a && (_p$.a = _$setProp(_el$47, "syntaxStyle", _v$33, _p$.a));
                   return _p$;
                 }, {
                   e: undefined,
                   t: undefined,
                   a: undefined
                 });
-                return _el$41;
+                return _el$46;
               }
             });
           },
           get children() {
-            var _el$25 = _$createElement("scrollbox"),
-              _el$26 = _$createElement("box"),
-              _el$27 = _$createElement("markdown");
-            _$insertNode(_el$25, _el$26);
-            _$setProp(_el$25, "flexGrow", 1);
-            _$setProp(_el$25, "minHeight", 0);
-            _$setProp(_el$25, "verticalScrollbarOptions", {
+            var _el$30 = _$createElement("scrollbox"),
+              _el$31 = _$createElement("box"),
+              _el$32 = _$createElement("markdown");
+            _$insertNode(_el$30, _el$31);
+            _$setProp(_el$30, "flexGrow", 1);
+            _$setProp(_el$30, "minHeight", 0);
+            _$setProp(_el$30, "verticalScrollbarOptions", {
               visible: true
             });
-            _$insertNode(_el$26, _el$27);
-            _$setProp(_el$26, "paddingLeft", 1);
-            _$setProp(_el$26, "paddingRight", 1);
-            _$setProp(_el$26, "flexShrink", 0);
-            _$setProp(_el$27, "conceal", true);
+            _$insertNode(_el$31, _el$32);
+            _$setProp(_el$31, "paddingLeft", 1);
+            _$setProp(_el$31, "paddingRight", 1);
+            _$setProp(_el$31, "flexShrink", 0);
+            _$setProp(_el$32, "conceal", true);
             _$effect(_p$ => {
-              var _v$20 = props.doc.text,
-                _v$21 = props.syntax,
-                _v$22 = props.theme.markdown.text,
-                _v$23 = props.theme.background.base;
-              _v$20 !== _p$.e && (_p$.e = _$setProp(_el$27, "content", _v$20, _p$.e));
-              _v$21 !== _p$.t && (_p$.t = _$setProp(_el$27, "syntaxStyle", _v$21, _p$.t));
-              _v$22 !== _p$.a && (_p$.a = _$setProp(_el$27, "fg", _v$22, _p$.a));
-              _v$23 !== _p$.o && (_p$.o = _$setProp(_el$27, "bg", _v$23, _p$.o));
+              var _v$22 = props.doc.text,
+                _v$23 = props.syntax,
+                _v$24 = props.theme.markdown.text,
+                _v$25 = props.theme.background.base;
+              _v$22 !== _p$.e && (_p$.e = _$setProp(_el$32, "content", _v$22, _p$.e));
+              _v$23 !== _p$.t && (_p$.t = _$setProp(_el$32, "syntaxStyle", _v$23, _p$.t));
+              _v$24 !== _p$.a && (_p$.a = _$setProp(_el$32, "fg", _v$24, _p$.a));
+              _v$25 !== _p$.o && (_p$.o = _$setProp(_el$32, "bg", _v$25, _p$.o));
               return _p$;
             }, {
               e: undefined,
@@ -769,7 +876,7 @@ export function EditorView(props) {
               a: undefined,
               o: undefined
             });
-            return _el$25;
+            return _el$30;
           }
         });
       }
@@ -779,81 +886,81 @@ export function EditorView(props) {
         return props.doc.truncated;
       },
       get children() {
-        var _el$28 = _$createElement("box"),
-          _el$29 = _$createElement("text");
-        _$insertNode(_el$28, _el$29);
-        _$setProp(_el$28, "height", 1);
-        _$setProp(_el$28, "flexShrink", 0);
-        _$setProp(_el$28, "paddingLeft", 2);
-        _$insertNode(_el$29, _$createTextNode(`truncated for display · open with an external editor for the full file`));
-        _$setProp(_el$29, "wrapMode", "none");
-        _$effect(_$p => _$setProp(_el$29, "fg", props.theme.text.feedback.warning.base, _$p));
-        return _el$28;
+        var _el$33 = _$createElement("box"),
+          _el$34 = _$createElement("text");
+        _$insertNode(_el$33, _el$34);
+        _$setProp(_el$33, "height", 1);
+        _$setProp(_el$33, "flexShrink", 0);
+        _$setProp(_el$33, "paddingLeft", 2);
+        _$insertNode(_el$34, _$createTextNode(`truncated for display · open with an external editor for the full file`));
+        _$setProp(_el$34, "wrapMode", "none");
+        _$effect(_$p => _$setProp(_el$34, "fg", props.theme.text.feedback.warning.base, _$p));
+        return _el$33;
       }
-    }), _el$31);
-    _$insertNode(_el$31, _el$32);
-    _$insertNode(_el$31, _el$33);
-    _$insertNode(_el$31, _el$34);
-    _$insertNode(_el$31, _el$37);
-    _$insertNode(_el$31, _el$38);
-    _$setProp(_el$31, "height", 1);
-    _$setProp(_el$31, "flexShrink", 0);
-    _$setProp(_el$31, "flexDirection", "row");
-    _$setProp(_el$31, "gap", 2);
-    _$setProp(_el$31, "paddingLeft", 2);
-    _$setProp(_el$31, "paddingRight", 2);
-    _$setProp(_el$32, "wrapMode", "none");
-    _$setProp(_el$32, "flexShrink", 0);
-    _$setProp(_el$32, "onMouseUp", event => {
+    }), _el$36);
+    _$insertNode(_el$36, _el$37);
+    _$insertNode(_el$36, _el$38);
+    _$insertNode(_el$36, _el$39);
+    _$insertNode(_el$36, _el$42);
+    _$insertNode(_el$36, _el$43);
+    _$setProp(_el$36, "height", 1);
+    _$setProp(_el$36, "flexShrink", 0);
+    _$setProp(_el$36, "flexDirection", "row");
+    _$setProp(_el$36, "gap", 2);
+    _$setProp(_el$36, "paddingLeft", 2);
+    _$setProp(_el$36, "paddingRight", 2);
+    _$setProp(_el$37, "wrapMode", "none");
+    _$setProp(_el$37, "flexShrink", 0);
+    _$setProp(_el$37, "onMouseUp", event => {
       if (event.button !== 0) return;
       event.stopPropagation?.();
       props.onToggleMode?.();
     });
-    _$insert(_el$32, (() => {
+    _$insert(_el$37, (() => {
       var _c$ = _$memo(() => !!props.editing);
       return () => _c$() ? "edit" : _$memo(() => !!props.doc.diff)() ? "diff" : props.markdownPreview && props.doc.markdown ? "preview" : "read";
     })());
-    _$setProp(_el$33, "wrapMode", "none");
-    _$setProp(_el$33, "flexShrink", 0);
-    _$insert(_el$33, () => props.doc.type);
-    _$insertNode(_el$34, _el$35);
-    _$insertNode(_el$34, _el$36);
-    _$setProp(_el$34, "wrapMode", "none");
-    _$setProp(_el$34, "flexShrink", 0);
-    _$insert(_el$34, () => cursor().line, _el$36);
-    _$insert(_el$34, () => cursor().column, null);
-    _$setProp(_el$37, "wrapMode", "none");
-    _$setProp(_el$37, "flexShrink", 0);
-    _$insert(_el$37, () => isDirty(props.doc) ? "unsaved" : "saved");
     _$setProp(_el$38, "wrapMode", "none");
-    _$setProp(_el$38, "truncate", true);
-    _$setProp(_el$38, "flexGrow", 1);
-    _$setProp(_el$38, "minWidth", 0);
-    _$insert(_el$38, () => props.doc.external ? "external" : "");
-    _$insert(_el$31, _$createComponent(Show, {
+    _$setProp(_el$38, "flexShrink", 0);
+    _$insert(_el$38, () => props.doc.type);
+    _$insertNode(_el$39, _el$40);
+    _$insertNode(_el$39, _el$41);
+    _$setProp(_el$39, "wrapMode", "none");
+    _$setProp(_el$39, "flexShrink", 0);
+    _$insert(_el$39, () => cursor().line, _el$41);
+    _$insert(_el$39, () => cursor().column, null);
+    _$setProp(_el$42, "wrapMode", "none");
+    _$setProp(_el$42, "flexShrink", 0);
+    _$insert(_el$42, () => isDirty(props.doc) ? "unsaved" : "saved");
+    _$setProp(_el$43, "wrapMode", "none");
+    _$setProp(_el$43, "truncate", true);
+    _$setProp(_el$43, "flexGrow", 1);
+    _$setProp(_el$43, "minWidth", 0);
+    _$insert(_el$43, () => props.doc.external ? "external" : "");
+    _$insert(_el$36, _$createComponent(Show, {
       get when() {
         return _$memo(() => !!props.settings.wrap)() && props.editing;
       },
       get children() {
-        var _el$39 = _$createElement("text");
-        _$insertNode(_el$39, _$createTextNode(`wrap`));
-        _$setProp(_el$39, "wrapMode", "none");
-        _$setProp(_el$39, "flexShrink", 0);
-        _$effect(_$p => _$setProp(_el$39, "fg", props.theme.text.muted, _$p));
-        return _el$39;
+        var _el$44 = _$createElement("text");
+        _$insertNode(_el$44, _$createTextNode(`wrap`));
+        _$setProp(_el$44, "wrapMode", "none");
+        _$setProp(_el$44, "flexShrink", 0);
+        _$effect(_$p => _$setProp(_el$44, "fg", props.theme.text.muted, _$p));
+        return _el$44;
       }
     }), null);
     _$effect(_p$ => {
-      var _v$24 = props.theme.text.action.primary.selected,
-        _v$25 = props.theme.text.muted,
-        _v$26 = props.theme.text.muted,
-        _v$27 = isDirty(props.doc) ? props.theme.text.feedback.warning.base : props.theme.text.muted,
-        _v$28 = props.theme.text.muted;
-      _v$24 !== _p$.e && (_p$.e = _$setProp(_el$32, "fg", _v$24, _p$.e));
-      _v$25 !== _p$.t && (_p$.t = _$setProp(_el$33, "fg", _v$25, _p$.t));
-      _v$26 !== _p$.a && (_p$.a = _$setProp(_el$34, "fg", _v$26, _p$.a));
-      _v$27 !== _p$.o && (_p$.o = _$setProp(_el$37, "fg", _v$27, _p$.o));
-      _v$28 !== _p$.i && (_p$.i = _$setProp(_el$38, "fg", _v$28, _p$.i));
+      var _v$26 = props.theme.text.action.primary.selected,
+        _v$27 = props.theme.text.muted,
+        _v$28 = props.theme.text.muted,
+        _v$29 = isDirty(props.doc) ? props.theme.text.feedback.warning.base : props.theme.text.muted,
+        _v$30 = props.theme.text.muted;
+      _v$26 !== _p$.e && (_p$.e = _$setProp(_el$37, "fg", _v$26, _p$.e));
+      _v$27 !== _p$.t && (_p$.t = _$setProp(_el$38, "fg", _v$27, _p$.t));
+      _v$28 !== _p$.a && (_p$.a = _$setProp(_el$39, "fg", _v$28, _p$.a));
+      _v$29 !== _p$.o && (_p$.o = _$setProp(_el$42, "fg", _v$29, _p$.o));
+      _v$30 !== _p$.i && (_p$.i = _$setProp(_el$43, "fg", _v$30, _p$.i));
       return _p$;
     }, {
       e: undefined,

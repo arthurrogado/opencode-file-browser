@@ -17,12 +17,12 @@ const ROWS = [{
 }, {
   key: "lineNumbers",
   label: "Line numbers",
-  hint: "gutter in viewer and editor",
+  hint: "line numbers in viewer and editor",
   kind: "toggle"
 }, {
   key: "wrap",
   label: "Wrap lines",
-  hint: "wrap while editing",
+  hint: "wrap text (hides line numbers)",
   kind: "toggle"
 }, {
   key: "tree",
@@ -33,7 +33,7 @@ const ROWS = [{
 }, {
   key: "panelPreview",
   label: "Panel preview",
-  hint: "preview in session panel",
+  hint: "preview inside the session panel",
   kind: "toggle"
 }, {
   key: "changes",
@@ -167,48 +167,49 @@ export function SettingsDialog(props) {
       each: ROWS,
       children: (row, position) => (() => {
         var _el$0 = _$createElement("box"),
-          _el$1 = _$createElement("text"),
+          _el$1 = _$createElement("box"),
           _el$10 = _$createElement("text"),
-          _el$11 = _$createElement("text");
+          _el$11 = _$createElement("text"),
+          _el$12 = _$createElement("text");
         _$insertNode(_el$0, _el$1);
-        _$insertNode(_el$0, _el$10);
-        _$insertNode(_el$0, _el$11);
-        _$setProp(_el$0, "flexDirection", "row");
-        _$setProp(_el$0, "height", 1);
+        _$insertNode(_el$0, _el$12);
+        _$setProp(_el$0, "flexDirection", "column");
+        _$setProp(_el$0, "height", 2);
         _$setProp(_el$0, "paddingLeft", 1);
         _$setProp(_el$0, "paddingRight", 1);
-        _$setProp(_el$0, "gap", 1);
         _$setProp(_el$0, "onMouseUp", event => {
           if (event.button !== MouseButton.LEFT || !draft().mouse) return;
           event.stopPropagation();
           setIndex(position());
           cycle(row);
         });
-        _$setProp(_el$1, "wrapMode", "none");
-        _$setProp(_el$1, "width", 18);
-        _$setProp(_el$1, "flexShrink", 0);
-        _$insert(_el$1, () => (position() === index() ? "› " : "  ") + row.label);
+        _$insertNode(_el$1, _el$10);
+        _$insertNode(_el$1, _el$11);
+        _$setProp(_el$1, "flexDirection", "row");
+        _$setProp(_el$1, "gap", 1);
         _$setProp(_el$10, "wrapMode", "none");
-        _$setProp(_el$10, "truncate", true);
         _$setProp(_el$10, "flexGrow", 1);
-        _$setProp(_el$10, "minWidth", 0);
-        _$insert(_el$10, () => row.hint);
+        _$setProp(_el$10, "truncate", true);
+        _$insert(_el$10, () => (position() === index() ? "› " : "  ") + row.label);
         _$setProp(_el$11, "wrapMode", "none");
-        _$setProp(_el$11, "width", 13);
         _$setProp(_el$11, "flexShrink", 0);
         _$insert(_el$11, (() => {
           var _c$ = _$memo(() => row.kind === "choice");
           return () => _c$() ? `‹ ${label(row)} ›` : label(row);
         })());
+        _$setProp(_el$12, "wrapMode", "none");
+        _$setProp(_el$12, "truncate", true);
+        _$setProp(_el$12, "paddingLeft", 2);
+        _$insert(_el$12, () => row.hint);
         _$effect(_p$ => {
           var _v$6 = position() === index() ? theme.background.raised.max : theme.background.base,
             _v$7 = position() === index() ? theme.text.action.primary.selected : theme.text.base,
-            _v$8 = theme.text.muted,
-            _v$9 = draft()[row.key] === DEFAULTS[row.key] ? theme.text.muted : theme.text.feedback.success.base;
+            _v$8 = draft()[row.key] === DEFAULTS[row.key] ? theme.text.muted : theme.text.feedback.success.base,
+            _v$9 = theme.text.muted;
           _v$6 !== _p$.e && (_p$.e = _$setProp(_el$0, "backgroundColor", _v$6, _p$.e));
-          _v$7 !== _p$.t && (_p$.t = _$setProp(_el$1, "fg", _v$7, _p$.t));
-          _v$8 !== _p$.a && (_p$.a = _$setProp(_el$10, "fg", _v$8, _p$.a));
-          _v$9 !== _p$.o && (_p$.o = _$setProp(_el$11, "fg", _v$9, _p$.o));
+          _v$7 !== _p$.t && (_p$.t = _$setProp(_el$10, "fg", _v$7, _p$.t));
+          _v$8 !== _p$.a && (_p$.a = _$setProp(_el$11, "fg", _v$8, _p$.a));
+          _v$9 !== _p$.o && (_p$.o = _$setProp(_el$12, "fg", _v$9, _p$.o));
           return _p$;
         }, {
           e: undefined,

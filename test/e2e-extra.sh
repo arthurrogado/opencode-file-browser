@@ -178,6 +178,47 @@ send Enter
 sleep 1.5
 if [ -f "$FIX/created.txt" ] || [ -f "$FIX/src/created.txt" ]; then say "PASS  context menu created the file"; pass=$((pass + 1)); else say "FAIL  context menu created the file"; fail=$((fail + 1)); fi
 expect "created file appears in the tree" "created.txt"
+expect "footer keeps the shortcuts while a status is shown" "↑↓ move"
+
+say "== file context menu offers copy and move"
+send Home
+sleep 0.3
+send F10
+wait_for "Move to" 20 || true
+expect "context menu has copy" "Copy"
+expect "context menu has move" "Move to"
+send Escape
+sleep 0.6
+
+say "== wrap hides the line numbers"
+send C-w
+sleep 1
+send F2
+wait_for "Preferences" 30 || true
+sleep 0.6
+send Home
+sleep 0.2
+send Down
+send Down
+sleep 0.3
+send Space
+sleep 0.8
+send Escape
+sleep 1.2
+refute "wrap removed the gutter" "  1 export const greeting"
+send F2
+wait_for "Preferences" 30 || true
+sleep 0.6
+send Home
+sleep 0.2
+send Down
+send Down
+sleep 0.3
+send Space
+sleep 0.8
+send Escape
+sleep 1.2
+expect "unwrapping brings the gutter back" "  1 export const greeting"
 
 say "== line numbers preference persists across reopen"
 send F2
