@@ -14,6 +14,7 @@ import path from "node:path";
 import { mkdir, readFile, rename as renameFile, rm, stat, writeFile } from "node:fs/promises";
 import { HEAVY_CHARS, HEAVY_LINES, MAX_CHARS, MAX_LINES, OVERSIZE_BYTES, OVERSIZE_LINES, basename, clampLongLines, expandHome, filetype, formatBytes, isBinary, isMarkdown, message, parentOf } from "./lib/util.js";
 import { useSettings } from "./lib/settings.js";
+import { collapseTarget, isNavigate, navigateRows, upTarget } from "./lib/navigation.js";
 import { searchContent } from "./lib/search.js";
 import * as git from "./lib/git.js";
 import { EditorView, isDirty } from "./ui/editor.js";
@@ -205,7 +206,7 @@ export function Browser(props) {
   // are not reliable when a panel remounts, and a stuck flag would swallow
   // every global key (escape included).
   const inputFocused = () => !!(searchInput && !searchInput.isDestroyed && searchInput.focused) || !!(commitInput && !commitInput.isDestroyed && commitInput.focused);
-  const navigate = () => options().tree === "navigate";
+  const navigate = () => isNavigate(options().tree);
   const rows = createMemo(() => {
     const name = query().trim();
     const fold = value => options().caseSensitive ? value : value.toLowerCase();
@@ -233,18 +234,7 @@ export function Browser(props) {
   });
   function listing() {
     if (!navigate()) return flatten(dirs(), expanded());
-    const root = navRoot();
-    const rows = (dirs()[root] ?? []).map(entry => ({
-      path: entry.path,
-      type: entry.type,
-      depth: 0
-    }));
-    return root ? [{
-      path: "..",
-      type: "directory",
-      depth: 0,
-      parent: true
-    }, ...rows] : rows;
+    return navigateRows(navRoot(), dirs()[navRoot()] ?? []);
   }
   function flatten(cache, open, root = "", depth = 0, output = []) {
     const entries = cache[root];
@@ -299,9 +289,9 @@ export function Browser(props) {
       setLoading(false);
     }
   }
-  async function goUp(root = false) {
+  async function goUp(all = false) {
     if (!navRoot()) return false;
-    await enterDirectory(root ? "" : parentOf(navRoot()));
+    await enterDirectory(upTarget(navRoot(), all));
     return true;
   }
   async function toggleDirectory(row) {
@@ -320,8 +310,9 @@ export function Browser(props) {
     }
   }
   function collapseAll() {
-    if (navigate()) {
-      void goUp(true);
+    const target = collapseTarget(options().tree, navRoot());
+    if (target !== null) {
+      void enterDirectory(target);
       return;
     }
     setExpanded([]);

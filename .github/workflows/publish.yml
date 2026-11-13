@@ -21,4 +21,5 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run typecheck
       - run: npm run bundle
+      - run: npm run test:unit
       - run: npm publish --access public

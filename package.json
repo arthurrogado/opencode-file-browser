@@ -1,6 +1,6 @@
 {
   "name": "opencode-file-browser",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Browse, edit and review files and git changes inside the OpenCode TUI",
   "type": "module",
   "exports": {
@@ -44,7 +44,8 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run bundle",
     "prepack": "node scripts/strip-dev.mjs",
-    "postpack": "node scripts/restore-dev.mjs"
+    "postpack": "node scripts/restore-dev.mjs",
+    "test:unit": "node --test test/unit.test.mjs"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",
