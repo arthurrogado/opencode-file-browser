@@ -103,6 +103,7 @@ npm run test:unit     # navigation rules (fast, no TUI)
 - [GitHub](https://github.com/arthurrogado/opencode-file-browser)
 - [npm](https://www.npmjs.com/package/opencode-file-browser)
 - [Project page](https://arthurrogado.github.io/opencode-file-browser/)
+- [Announcement (r/opencode)](https://www.reddit.com/r/opencode/comments/1xv5un1/opencode_file_browser_is_now_a_mini_ide_editor/)
 - [Issues](https://github.com/arthurrogado/opencode-file-browser/issues)
 
 MIT.
