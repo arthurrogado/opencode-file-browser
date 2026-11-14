@@ -190,9 +190,27 @@ expect "context menu has move" "Move to"
 send Escape
 sleep 0.6
 
+say "== the file tree can be hidden and brought back"
+send F6
+sleep 0.8
+refute "F6 hides the tree" "Explorer"
+refute "F6 hides the tree (no list header)" "Search files"
+send F6
+sleep 0.8
+expect "F6 brings the tree back" "Explorer"
+
 say "== wrap hides the line numbers"
 send C-w
 sleep 1
+send C-x o
+wait_for "Open file by path" 25 || true
+sleep 0.4
+send "$FIX/src/app.ts"
+sleep 0.4
+send Enter
+sleep 1.8
+send C-Home
+sleep 0.6
 send F2
 wait_for "Preferences" 30 || true
 sleep 0.6
@@ -219,6 +237,67 @@ sleep 0.8
 send Escape
 sleep 1.2
 expect "unwrapping brings the gutter back" "  1 export const greeting"
+
+say "== the tab menu reveals the file in the tree (expand mode)"
+send S-Tab
+sleep 0.5
+send S-Enter
+sleep 1.2
+refute "collapse hides the expanded file" "◆ app.ts"
+send S-Tab
+sleep 0.4
+send Tab
+sleep 0.5
+send F6
+sleep 0.8
+refute "tree hidden before the reveal" "Explorer"
+send F10
+wait_for "Tab actions" 25 || true
+sleep 0.4
+send Enter
+sleep 1.6
+expect "reveal brings a hidden tree back" "Explorer"
+expect "reveal expands the ancestors" "◆ app.ts"
+expect "reveal keeps the folder open" "▾ src/"
+
+say "== the tab menu reveals the file in the tree (navigate mode)"
+send F2
+wait_for "Preferences" 30 || true
+sleep 0.6
+send Home
+sleep 0.2
+send Down
+send Down
+send Down
+sleep 0.3
+send Right
+sleep 0.6
+send Escape
+sleep 1.2
+send S-Tab
+sleep 0.4
+send Tab
+sleep 0.5
+send F10
+wait_for "Tab actions" 25 || true
+sleep 0.4
+send Enter
+sleep 1.6
+expect "reveal enters the file folder" "/proj/src"
+expect "reveal selects the file row" "◆ app.ts"
+send F2
+wait_for "Preferences" 30 || true
+sleep 0.6
+send Home
+sleep 0.2
+send Down
+send Down
+send Down
+sleep 0.3
+send Left
+sleep 0.6
+send Escape
+sleep 1.2
 
 say "== line numbers preference persists across reopen"
 send F2

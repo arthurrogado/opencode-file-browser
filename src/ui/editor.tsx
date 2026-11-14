@@ -140,6 +140,10 @@ export function EditorView(props: {
   markdownPreview: boolean
   focused: boolean
   line?: number
+  initialScroll?: number
+  initialLine?: number
+  initialColumn?: number
+  onPosition?: (position: { scroll?: number; line?: number; column?: number }) => void
   onText: (text: string) => void
   onSave: () => void
   onCursor: (line: number, column: number) => void
@@ -162,6 +166,7 @@ export function EditorView(props: {
   const [findOpen, setFindOpen] = createSignal(false)
   const [findQuery, setFindQuery] = createSignal("")
   const [findStatus, setFindStatus] = createSignal("")
+  const [previewLine, setPreviewLine] = createSignal(1)
   const [hOffset, setHOffset] = createSignal(0)
   const [hWidth, setHWidth] = createSignal(0)
   let hbar: any
@@ -175,6 +180,14 @@ export function EditorView(props: {
     mounted = false
     clearInterval(timer)
     clearTimeout(highlightTimer)
+    if (textarea && !textarea.isDestroyed) {
+      try {
+        const cursor = textarea.logicalCursor
+        props.onPosition?.({ line: cursor.row + 1, column: cursor.col + 1 })
+      } catch {}
+    } else if (contentScroll && !contentScroll.isDestroyed) {
+      props.onPosition?.({ scroll: contentScroll.scrollTop })
+    }
   })
 
   const lineCount = () => (props.doc.text.match(/\n/g)?.length ?? 0) + 1
@@ -190,6 +203,13 @@ export function EditorView(props: {
         setHOffset(viewport.offsetX)
         setHWidth(viewport.width)
       } catch {}
+    }
+    if (scroll && !scroll.isDestroyed) {
+      const total = Math.max(1, lineCount())
+      const max = Math.max(1, scroll.scrollHeight - scroll.viewport.height)
+      const line = Math.min(total, Math.max(1, Math.round((scroll.scrollTop / max) * (total - 1)) + 1))
+      setPreviewLine(line)
+      props.onPosition?.({ scroll: scroll.scrollTop, line })
     }
   }
   const timer = setInterval(syncViewport, 100)
@@ -456,7 +476,14 @@ export function EditorView(props: {
                   },
                 })
                 setTimeout(() => {
-                  if (element && !element.isDestroyed && props.focused) focusEditor()
+                  if (element && !element.isDestroyed) {
+                    try {
+                      if (props.initialLine) {
+                        element.editBuffer.setCursor((props.initialLine ?? 1) - 1, (props.initialColumn ?? 1) - 1)
+                      }
+                    } catch {}
+                    if (props.focused) focusEditor()
+                  }
                   scheduleHighlight()
                   syncViewport()
                 }, 30)
@@ -479,6 +506,7 @@ export function EditorView(props: {
               onCursorChange={(event: { line: number; visualColumn: number }) => {
                 setCursor({ line: event.line + 1, column: event.visualColumn + 1 })
                 props.onCursor(event.line + 1, event.visualColumn + 1)
+                props.onPosition?.({ line: event.line + 1, column: event.visualColumn + 1 })
                 syncViewport()
               }}
               onKeyDown={(event: any) => {
@@ -577,7 +605,13 @@ export function EditorView(props: {
                   <scrollbox
                     ref={(element: ScrollBoxRenderable) => {
                       contentScroll = element
-                      setTimeout(syncViewport, 30)
+                      setTimeout(() => {
+                        if (element && !element.isDestroyed) {
+                          const target = props.initialScroll ?? (props.initialLine ? Math.max(0, props.initialLine - 1) : 0)
+                          if (target) element.scrollTo(target)
+                        }
+                        syncViewport()
+                      }, 40)
                     }}
                     flexGrow={1}
                     minHeight={0}
@@ -607,7 +641,21 @@ export function EditorView(props: {
               </Show>
             }
           >
-            <scrollbox flexGrow={1} minHeight={0} verticalScrollbarOptions={{ visible: true }}>
+            <scrollbox
+              ref={(element: ScrollBoxRenderable) => {
+                contentScroll = element
+                setTimeout(() => {
+                  if (element && !element.isDestroyed) {
+                    const target = props.initialScroll ?? (props.initialLine ? Math.max(0, props.initialLine - 1) : 0)
+                    if (target) element.scrollTo(target)
+                  }
+                  syncViewport()
+                }, 40)
+              }}
+              flexGrow={1}
+              minHeight={0}
+              verticalScrollbarOptions={{ visible: true }}
+            >
               <box paddingLeft={1} paddingRight={1} flexShrink={0}>
                 <markdown content={props.doc.text} syntaxStyle={props.syntax} conceal fg={props.theme.markdown.text} bg={props.theme.background.base} />
               </box>
@@ -641,7 +689,7 @@ export function EditorView(props: {
           {props.doc.type}
         </text>
         <text fg={props.theme.text.muted} wrapMode="none" flexShrink={0}>
-          Ln {cursor().line}, Col {cursor().column}
+          {props.editing ? `Ln ${cursor().line}, Col ${cursor().column}` : `Ln ${previewLine()}/${lineCount()}`}
         </text>
         <text fg={isDirty(props.doc) ? props.theme.text.feedback.warning.base : props.theme.text.muted} wrapMode="none" flexShrink={0}>
           {isDirty(props.doc) ? "unsaved" : "saved"}

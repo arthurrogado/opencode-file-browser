@@ -157,6 +157,8 @@ export function Browser(props: {
   const [drag, setDrag] = createSignal<{ active: boolean; width: number }>({ active: false, width: 0 })
   const [splitWidth, setSplitWidth] = createSignal(0)
   const [clipboard, setClipboard] = createSignal<string>()
+  const [treeHidden, setTreeHidden] = createSignal(false)
+  const positions = new Map<string, { scroll?: number; line?: number; column?: number }>()
   const [statusTimer, setStatusTimer] = createSignal<ReturnType<typeof setTimeout>>()
   createEffect(() => {
     const value = status()
@@ -546,6 +548,61 @@ export function Browser(props: {
     else await openDoc(row.path, false)
   }
 
+  /**
+   * Take the tree to where the file lives: expand the ancestors (expand mode)
+   * or enter the parent folder (navigate mode) and select the row. Diff tabs
+   * point at the file they came from; external files have no tree entry.
+   */
+  async function revealDoc(target: Doc) {
+    const file = target.rawPath ?? target.path
+    if (target.external || path.isAbsolute(file) || file.startsWith("..")) {
+      setStatus(`${basename(file)} is outside the project folder, so it has no tree entry`)
+      return
+    }
+    setTreeHidden(false)
+    setQuery("")
+    setFound([])
+    setHits([])
+    setInputFocus(false)
+    setLoading(true)
+    try {
+      // Dotfiles are filtered out at load time, so a reveal has to un-hide
+      // them and reload before the row can exist.
+      if (basename(file).startsWith(".") && !options().hidden) {
+        await settings.update((draft) => {
+          draft.hidden = true
+        })
+        await refreshTree()
+      }
+      const parent = parentOf(file)
+      if (navigate()) {
+        if (navRoot() !== parent || !dirs()[parent]) await enterDirectory(parent)
+      } else {
+        if (!dirs()[""]) await loadDirectory("")
+        const open = new Set(expanded())
+        let prefix = ""
+        for (const segment of parent ? parent.split("/") : []) {
+          prefix = prefix ? `${prefix}/${segment}` : segment
+          if (!dirs()[prefix]) await loadDirectory(prefix)
+          open.add(prefix)
+        }
+        setExpanded([...open])
+      }
+      const at = listing().findIndex((row) => row.path === file)
+      if (at < 0) {
+        setStatus(`Could not find ${file} in the tree`)
+        return
+      }
+      setFocus("explorer")
+      setIndex(at)
+      setStatus(`Revealed ${file}`)
+    } catch (cause) {
+      setStatus(`Could not reveal ${file}: ${message(cause)}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   function closeDoc(at: number) {
     const target = docs()[at]
     if (!target) return
@@ -881,6 +938,7 @@ export function Browser(props: {
     { keys: "F2", title: "Preferences" },
     { keys: "F3", title: "Focus the changes panel" },
     { keys: "F4", title: "Toggle preview / editor" },
+    { keys: "F6", title: "Show/hide the file tree" },
     { keys: "f", title: "Toggle fullscreen (docked panel)" },
     { keys: "r", title: "Reload tree, file and git status" },
     { keys: "h", title: "Toggle hidden files" },
@@ -1005,6 +1063,7 @@ export function Browser(props: {
       { title: "Close all tabs", value: "close-all" },
     ]
     const tabOptions = [
+      { title: "Reveal in the file tree", value: "reveal" },
       { title: `Close (${tabDoc ? basename(tabDoc.path) : "tab"})`, value: "close-tab" },
       { title: "Close other tabs", value: "close-others" },
       { title: "Close all tabs", value: "close-all" },
@@ -1015,6 +1074,10 @@ export function Browser(props: {
     })
     if (!choice) return
 
+    if (choice === "reveal") {
+      if (tabDoc) await revealDoc(tabDoc)
+      return
+    }
     if (choice === "close-tab") {
       const at = targetDoc ? docs().findIndex((item) => item.path === targetDoc.path && item.external === targetDoc.external) : active()
       if (at >= 0) closeDoc(at)
@@ -1156,6 +1219,17 @@ export function Browser(props: {
     { id: "file-browser.markdown", title: "Toggle Markdown/source", group: "Files", bind: "m", enabled: () => !inputFocused() && !composing(), run: toggleMarkdown },
     { id: "file-browser.reload", title: "Reload", group: "Files", bind: "r", enabled: () => !inputFocused() && !composing(), run: () => void refresh() },
     { id: "file-browser.hidden", title: "Toggle hidden files", group: "Files", bind: "h", enabled: () => !inputFocused() && !composing(), run: () => void settings.update((draft) => { draft.hidden = !draft.hidden }).then(refreshTree) },
+    {
+      id: "file-browser.tree",
+      title: "Show/hide the file tree",
+      group: "Files",
+      bind: "b",
+      enabled: () => !inputFocused() && !composing() && focus() !== "changes",
+      run: () => {
+        setTreeHidden((value) => !value)
+        if (treeHidden() && focus() === "explorer") setFocus("editor")
+      },
+    },
     { id: "file-browser.path", title: "Open file by path", group: "Files", bind: "o", enabled: () => !inputFocused() && !composing(), run: () => void promptPath() },
     { id: "file-browser.fullscreen", title: "Toggle fullscreen", group: "Files", bind: "f", enabled: () => !inputFocused() && !composing(), run: toggleFullscreen },
     {
@@ -1210,6 +1284,16 @@ export function Browser(props: {
         },
       },
       { id: "file-browser.keys.edit", title: "Toggle preview/editor", group: "Files", bind: "f4", run: toggleEdit },
+      {
+        id: "file-browser.keys.tree",
+        title: "Show/hide the file tree",
+        group: "Files",
+        bind: "f6",
+        run: () => {
+          setTreeHidden((value) => !value)
+          if (treeHidden() && focus() === "explorer") setFocus("editor")
+        },
+      },
       {
         id: "file-browser.keys.explorer",
         title: "Focus the explorer",
@@ -1700,6 +1784,7 @@ export function Browser(props: {
 
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         {/* Explorer */}
+        <Show when={!treeHidden()}>
         <box
           width={explorerWidth()}
           flexShrink={0}
@@ -1718,6 +1803,19 @@ export function Browser(props: {
             </text>
             <text fg={theme.text.muted} wrapMode="none">
               {loading() || searching() ? "…" : ""}
+            </text>
+            <text
+              fg={theme.text.muted}
+              wrapMode="none"
+              selectable={false}
+              onMouseUp={(event: any) => {
+                if (!options().mouse || event.button !== MouseButton.LEFT) return
+                event.stopPropagation?.()
+                setTreeHidden(true)
+                if (focus() === "explorer") setFocus("editor")
+              }}
+            >
+              «
             </text>
           </box>
           <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1}>
@@ -1814,6 +1912,25 @@ export function Browser(props: {
             </box>
           </Show>
         </box>
+        </Show>
+        <Show when={treeHidden()}>
+          <box
+            width={2}
+            flexShrink={0}
+            flexDirection="column"
+            alignItems="center"
+            backgroundColor={surface()}
+            onMouseUp={(event: any) => {
+              if (!options().mouse || event.button !== MouseButton.LEFT) return
+              event.stopPropagation?.()
+              setTreeHidden(false)
+            }}
+          >
+            <text fg={theme.text.action.primary.selected} wrapMode="none" selectable={false}>
+              »
+            </text>
+          </box>
+        </Show>
 
         {/* Editor */}
         <Show when={showEditor()}>
@@ -1895,6 +2012,14 @@ export function Browser(props: {
                     markdownPreview={showMarkdown()}
                     focused={focus() === "editor"}
                     line={pendingLine()}
+                    initialScroll={positions.get(doc()!.path)?.scroll ?? 0}
+                    initialLine={positions.get(doc()!.path)?.line}
+                    initialColumn={positions.get(doc()!.path)?.column}
+                    onPosition={(position) => {
+                      const path = doc()?.path
+                      if (!path) return
+                      positions.set(path, { ...positions.get(path), ...position })
+                    }}
                     onText={(text) => updateDoc(doc()!, text)}
                     onSave={() => void save()}
                     onCursor={() => {}}
@@ -2029,7 +2154,7 @@ export function Browser(props: {
                 ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches"
                 : focus() === "editor"
                   ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help"
-                  : "↑↓ move · enter open · right click actions · tab pane · ctrl+f search · F2 prefs · F1 help")}
+                  : "↑↓ move · enter open · right click actions · tab pane · ctrl+f search · F6 tree · F2 prefs · F1 help")}
         </text>
         <text fg={theme.text.muted} wrapMode="none">
           {simple() ? "simple" : `${docs().length} tabs`}

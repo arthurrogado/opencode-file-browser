@@ -148,6 +148,8 @@ export function Browser(props) {
   });
   const [splitWidth, setSplitWidth] = createSignal(0);
   const [clipboard, setClipboard] = createSignal();
+  const [treeHidden, setTreeHidden] = createSignal(false);
+  const positions = new Map();
   const [statusTimer, setStatusTimer] = createSignal();
   createEffect(() => {
     const value = status();
@@ -569,6 +571,61 @@ export function Browser(props) {
       return;
     }
     if (row.path.endsWith("/")) await toggleDirectory(row);else await openDoc(row.path, false);
+  }
+
+  /**
+   * Take the tree to where the file lives: expand the ancestors (expand mode)
+   * or enter the parent folder (navigate mode) and select the row. Diff tabs
+   * point at the file they came from; external files have no tree entry.
+   */
+  async function revealDoc(target) {
+    const file = target.rawPath ?? target.path;
+    if (target.external || path.isAbsolute(file) || file.startsWith("..")) {
+      setStatus(`${basename(file)} is outside the project folder, so it has no tree entry`);
+      return;
+    }
+    setTreeHidden(false);
+    setQuery("");
+    setFound([]);
+    setHits([]);
+    setInputFocus(false);
+    setLoading(true);
+    try {
+      // Dotfiles are filtered out at load time, so a reveal has to un-hide
+      // them and reload before the row can exist.
+      if (basename(file).startsWith(".") && !options().hidden) {
+        await settings.update(draft => {
+          draft.hidden = true;
+        });
+        await refreshTree();
+      }
+      const parent = parentOf(file);
+      if (navigate()) {
+        if (navRoot() !== parent || !dirs()[parent]) await enterDirectory(parent);
+      } else {
+        if (!dirs()[""]) await loadDirectory("");
+        const open = new Set(expanded());
+        let prefix = "";
+        for (const segment of parent ? parent.split("/") : []) {
+          prefix = prefix ? `${prefix}/${segment}` : segment;
+          if (!dirs()[prefix]) await loadDirectory(prefix);
+          open.add(prefix);
+        }
+        setExpanded([...open]);
+      }
+      const at = listing().findIndex(row => row.path === file);
+      if (at < 0) {
+        setStatus(`Could not find ${file} in the tree`);
+        return;
+      }
+      setFocus("explorer");
+      setIndex(at);
+      setStatus(`Revealed ${file}`);
+    } catch (cause) {
+      setStatus(`Could not reveal ${file}: ${message(cause)}`);
+    } finally {
+      setLoading(false);
+    }
   }
   function closeDoc(at) {
     const target = docs()[at];
@@ -1019,6 +1076,9 @@ export function Browser(props) {
     keys: "F4",
     title: "Toggle preview / editor"
   }, {
+    keys: "F6",
+    title: "Show/hide the file tree"
+  }, {
     keys: "f",
     title: "Toggle fullscreen (docked panel)"
   }, {
@@ -1175,6 +1235,9 @@ export function Browser(props) {
       value: "close-all"
     }];
     const tabOptions = [{
+      title: "Reveal in the file tree",
+      value: "reveal"
+    }, {
       title: `Close (${tabDoc ? basename(tabDoc.path) : "tab"})`,
       value: "close-tab"
     }, {
@@ -1189,6 +1252,10 @@ export function Browser(props) {
       options: kind === "tree" ? treeOptions : tabOptions
     });
     if (!choice) return;
+    if (choice === "reveal") {
+      if (tabDoc) await revealDoc(tabDoc);
+      return;
+    }
     if (choice === "close-tab") {
       const at = targetDoc ? docs().findIndex(item => item.path === targetDoc.path && item.external === targetDoc.external) : active();
       if (at >= 0) closeDoc(at);
@@ -1475,6 +1542,16 @@ export function Browser(props) {
       draft.hidden = !draft.hidden;
     }).then(refreshTree)
   }, {
+    id: "file-browser.tree",
+    title: "Show/hide the file tree",
+    group: "Files",
+    bind: "b",
+    enabled: () => !inputFocused() && !composing() && focus() !== "changes",
+    run: () => {
+      setTreeHidden(value => !value);
+      if (treeHidden() && focus() === "explorer") setFocus("editor");
+    }
+  }, {
     id: "file-browser.path",
     title: "Open file by path",
     group: "Files",
@@ -1608,6 +1685,15 @@ export function Browser(props) {
     group: "Files",
     bind: "f4",
     run: toggleEdit
+  }, {
+    id: "file-browser.keys.tree",
+    title: "Show/hide the file tree",
+    group: "Files",
+    bind: "f6",
+    run: () => {
+      setTreeHidden(value => !value);
+      if (treeHidden() && focus() === "explorer") setFocus("editor");
+    }
   }, {
     id: "file-browser.keys.explorer",
     title: "Focus the explorer",
@@ -2080,22 +2166,12 @@ export function Browser(props) {
       _el$28 = _$createElement("text"),
       _el$30 = _$createElement("text"),
       _el$31 = _$createElement("box"),
-      _el$32 = _$createElement("box"),
-      _el$33 = _$createElement("box"),
-      _el$34 = _$createElement("text"),
-      _el$36 = _$createElement("text"),
-      _el$37 = _$createTextNode(`[`),
-      _el$38 = _$createTextNode(`]`),
-      _el$39 = _$createElement("text"),
-      _el$40 = _$createElement("box"),
-      _el$41 = _$createElement("input"),
-      _el$42 = _$createElement("scrollbox"),
-      _el$79 = _$createElement("box"),
-      _el$80 = _$createElement("text"),
-      _el$81 = _$createElement("text");
+      _el$84 = _$createElement("box"),
+      _el$85 = _$createElement("text"),
+      _el$86 = _$createElement("text");
     _$insertNode(_el$24, _el$25);
     _$insertNode(_el$24, _el$31);
-    _$insertNode(_el$24, _el$79);
+    _$insertNode(_el$24, _el$84);
     _$setProp(_el$24, "width", "100%");
     _$setProp(_el$24, "height", "100%");
     _$setProp(_el$24, "flexDirection", "column");
@@ -2138,178 +2214,285 @@ export function Browser(props) {
     }), _el$30);
     _$setProp(_el$30, "wrapMode", "none");
     _$insert(_el$30, headerCount);
-    _$insertNode(_el$31, _el$32);
     _$setProp(_el$31, "flexDirection", "row");
     _$setProp(_el$31, "flexGrow", 1);
     _$setProp(_el$31, "minHeight", 0);
-    _$insertNode(_el$32, _el$33);
-    _$insertNode(_el$32, _el$40);
-    _$insertNode(_el$32, _el$42);
-    _$setProp(_el$32, "flexShrink", 0);
-    _$setProp(_el$32, "minHeight", 0);
-    _$setProp(_el$32, "flexDirection", "column");
-    _$insertNode(_el$33, _el$34);
-    _$insertNode(_el$33, _el$36);
-    _$insertNode(_el$33, _el$39);
-    _$setProp(_el$33, "height", 1);
-    _$setProp(_el$33, "flexShrink", 0);
-    _$setProp(_el$33, "paddingLeft", 1);
-    _$setProp(_el$33, "paddingRight", 1);
-    _$setProp(_el$33, "flexDirection", "row");
-    _$setProp(_el$33, "gap", 1);
-    _$insertNode(_el$34, _$createTextNode(`Explorer`));
-    _$setProp(_el$34, "wrapMode", "none");
-    _$insertNode(_el$36, _el$37);
-    _$insertNode(_el$36, _el$38);
-    _$setProp(_el$36, "wrapMode", "none");
-    _$setProp(_el$36, "truncate", true);
-    _$setProp(_el$36, "flexGrow", 1);
-    _$insert(_el$36, () => searchMode() === "name" ? "names" : "content", _el$38);
-    _$setProp(_el$39, "wrapMode", "none");
-    _$insert(_el$39, () => loading() || searching() ? "…" : "");
-    _$insertNode(_el$40, _el$41);
-    _$setProp(_el$40, "height", 1);
-    _$setProp(_el$40, "flexShrink", 0);
-    _$setProp(_el$40, "paddingLeft", 1);
-    _$setProp(_el$40, "paddingRight", 1);
-    _$use(element => {
-      searchInput = element;
-      element.on("focus", () => setInputFocus(true));
-      element.on("blur", () => setInputFocus(false));
-    }, _el$41);
-    _$setProp(_el$41, "onInput", value => scheduleSearch(value));
-    _$setProp(_el$41, "on:focus", () => setInputFocus(true));
-    _$setProp(_el$41, "on:blur", () => setInputFocus(false));
-    _$setProp(_el$41, "onKeyDown", event => {
-      const key = String(event.name ?? event.key ?? "").toLowerCase();
-      if (key === "escape") {
-        scheduleSearch("");
-        setInputFocus(false);
-        try {
-          searchInput?.blur();
-        } catch {}
-        return;
-      }
-      if (key === "down") {
-        event.preventDefault?.();
-        moveSelection(1);
-        return;
-      }
-      if (key === "up") {
-        event.preventDefault?.();
-        moveSelection(-1);
-        return;
-      }
-      if (key === "pagedown") {
-        event.preventDefault?.();
-        pageSelection(1);
-        return;
-      }
-      if (key === "pageup") {
-        event.preventDefault?.();
-        pageSelection(-1);
-        return;
-      }
-      if (key === "return") {
-        const row = currentRow();
-        if (!row) return;
-        event.preventDefault?.();
-        try {
-          searchInput?.blur();
-        } catch {}
-        void openRow(row);
-      }
-    });
-    _$use(element => listScroll = element, _el$42);
-    _$setProp(_el$42, "flexGrow", 1);
-    _$setProp(_el$42, "minHeight", 0);
-    _$setProp(_el$42, "verticalScrollbarOptions", {
-      visible: true
-    });
-    _$setProp(_el$42, "onMouseUp", event => {
-      if (!options().mouse || event.button !== MouseButton.RIGHT) return;
-      event.stopPropagation?.();
-      setFocus("explorer");
-      void openContext("tree", undefined, navigate() ? navRoot() : "");
-    });
-    _$insert(_el$42, _$createComponent(Show, {
+    _$insert(_el$31, _$createComponent(Show, {
       get when() {
-        return error();
+        return !treeHidden();
       },
       get children() {
-        var _el$43 = _$createElement("text");
-        _$setProp(_el$43, "paddingLeft", 1);
-        _$setProp(_el$43, "wrapMode", "word");
-        _$insert(_el$43, error);
-        _$effect(_$p => _$setProp(_el$43, "fg", theme.text.feedback.error.base, _$p));
-        return _el$43;
-      }
-    }), null);
-    _$insert(_el$42, _$createComponent(Show, {
-      get when() {
-        return _$memo(() => !!!loading())() && rows().length === 0;
-      },
-      get children() {
-        var _el$44 = _$createElement("box"),
-          _el$45 = _$createElement("text");
-        _$insertNode(_el$44, _el$45);
-        _$setProp(_el$44, "paddingLeft", 1);
-        _$setProp(_el$45, "wrapMode", "none");
-        _$insert(_el$45, (() => {
-          var _c$4 = _$memo(() => !!query().trim());
-          return () => _c$4() ? "No matches" : navigate() && navRoot() ? "empty folder · ← or .. to go up" : "(empty)";
-        })());
-        _$effect(_$p => _$setProp(_el$45, "fg", theme.text.muted, _$p));
-        return _el$44;
-      }
-    }), null);
-    _$insert(_el$42, _$createComponent(For, {
-      get each() {
-        return rows();
-      },
-      children: (row, position) => _$createComponent(RowView, {
-        row: row,
-        get position() {
-          return position();
-        }
-      })
-    }), null);
-    _$insert(_el$32, _$createComponent(Show, {
-      get when() {
-        return !simple();
-      },
-      get children() {
-        var _el$46 = _$createElement("box"),
-          _el$47 = _$createElement("text"),
-          _el$48 = _$createElement("text");
-        _$insertNode(_el$46, _el$47);
-        _$insertNode(_el$46, _el$48);
-        _$setProp(_el$46, "height", 1);
-        _$setProp(_el$46, "flexShrink", 0);
-        _$setProp(_el$46, "paddingLeft", 1);
-        _$setProp(_el$46, "paddingRight", 1);
-        _$setProp(_el$46, "flexDirection", "row");
-        _$setProp(_el$46, "gap", 1);
-        _$setProp(_el$47, "wrapMode", "none");
-        _$setProp(_el$47, "truncate", true);
-        _$setProp(_el$47, "flexGrow", 1);
-        _$insert(_el$47, (() => {
-          var _c$5 = _$memo(() => !!gitState().repo);
-          return () => _c$5() ? `±${gitState().changes.length} changes` : "no repository";
-        })());
-        _$insertNode(_el$48, _$createTextNode(`ctrl+e`));
-        _$setProp(_el$48, "wrapMode", "none");
+        var _el$32 = _$createElement("box"),
+          _el$33 = _$createElement("box"),
+          _el$34 = _$createElement("text"),
+          _el$36 = _$createElement("text"),
+          _el$37 = _$createTextNode(`[`),
+          _el$38 = _$createTextNode(`]`),
+          _el$39 = _$createElement("text"),
+          _el$40 = _$createElement("text"),
+          _el$42 = _$createElement("box"),
+          _el$43 = _$createElement("input"),
+          _el$44 = _$createElement("scrollbox");
+        _$insertNode(_el$32, _el$33);
+        _$insertNode(_el$32, _el$42);
+        _$insertNode(_el$32, _el$44);
+        _$setProp(_el$32, "flexShrink", 0);
+        _$setProp(_el$32, "minHeight", 0);
+        _$setProp(_el$32, "flexDirection", "column");
+        _$insertNode(_el$33, _el$34);
+        _$insertNode(_el$33, _el$36);
+        _$insertNode(_el$33, _el$39);
+        _$insertNode(_el$33, _el$40);
+        _$setProp(_el$33, "height", 1);
+        _$setProp(_el$33, "flexShrink", 0);
+        _$setProp(_el$33, "paddingLeft", 1);
+        _$setProp(_el$33, "paddingRight", 1);
+        _$setProp(_el$33, "flexDirection", "row");
+        _$setProp(_el$33, "gap", 1);
+        _$insertNode(_el$34, _$createTextNode(`Explorer`));
+        _$setProp(_el$34, "wrapMode", "none");
+        _$insertNode(_el$36, _el$37);
+        _$insertNode(_el$36, _el$38);
+        _$setProp(_el$36, "wrapMode", "none");
+        _$setProp(_el$36, "truncate", true);
+        _$setProp(_el$36, "flexGrow", 1);
+        _$insert(_el$36, () => searchMode() === "name" ? "names" : "content", _el$38);
+        _$setProp(_el$39, "wrapMode", "none");
+        _$insert(_el$39, () => loading() || searching() ? "…" : "");
+        _$insertNode(_el$40, _$createTextNode(`«`));
+        _$setProp(_el$40, "wrapMode", "none");
+        _$setProp(_el$40, "selectable", false);
+        _$setProp(_el$40, "onMouseUp", event => {
+          if (!options().mouse || event.button !== MouseButton.LEFT) return;
+          event.stopPropagation?.();
+          setTreeHidden(true);
+          if (focus() === "explorer") setFocus("editor");
+        });
+        _$insertNode(_el$42, _el$43);
+        _$setProp(_el$42, "height", 1);
+        _$setProp(_el$42, "flexShrink", 0);
+        _$setProp(_el$42, "paddingLeft", 1);
+        _$setProp(_el$42, "paddingRight", 1);
+        _$use(element => {
+          searchInput = element;
+          element.on("focus", () => setInputFocus(true));
+          element.on("blur", () => setInputFocus(false));
+        }, _el$43);
+        _$setProp(_el$43, "onInput", value => scheduleSearch(value));
+        _$setProp(_el$43, "on:focus", () => setInputFocus(true));
+        _$setProp(_el$43, "on:blur", () => setInputFocus(false));
+        _$setProp(_el$43, "onKeyDown", event => {
+          const key = String(event.name ?? event.key ?? "").toLowerCase();
+          if (key === "escape") {
+            scheduleSearch("");
+            setInputFocus(false);
+            try {
+              searchInput?.blur();
+            } catch {}
+            return;
+          }
+          if (key === "down") {
+            event.preventDefault?.();
+            moveSelection(1);
+            return;
+          }
+          if (key === "up") {
+            event.preventDefault?.();
+            moveSelection(-1);
+            return;
+          }
+          if (key === "pagedown") {
+            event.preventDefault?.();
+            pageSelection(1);
+            return;
+          }
+          if (key === "pageup") {
+            event.preventDefault?.();
+            pageSelection(-1);
+            return;
+          }
+          if (key === "return") {
+            const row = currentRow();
+            if (!row) return;
+            event.preventDefault?.();
+            try {
+              searchInput?.blur();
+            } catch {}
+            void openRow(row);
+          }
+        });
+        _$use(element => listScroll = element, _el$44);
+        _$setProp(_el$44, "flexGrow", 1);
+        _$setProp(_el$44, "minHeight", 0);
+        _$setProp(_el$44, "verticalScrollbarOptions", {
+          visible: true
+        });
+        _$setProp(_el$44, "onMouseUp", event => {
+          if (!options().mouse || event.button !== MouseButton.RIGHT) return;
+          event.stopPropagation?.();
+          setFocus("explorer");
+          void openContext("tree", undefined, navigate() ? navRoot() : "");
+        });
+        _$insert(_el$44, _$createComponent(Show, {
+          get when() {
+            return error();
+          },
+          get children() {
+            var _el$45 = _$createElement("text");
+            _$setProp(_el$45, "paddingLeft", 1);
+            _$setProp(_el$45, "wrapMode", "word");
+            _$insert(_el$45, error);
+            _$effect(_$p => _$setProp(_el$45, "fg", theme.text.feedback.error.base, _$p));
+            return _el$45;
+          }
+        }), null);
+        _$insert(_el$44, _$createComponent(Show, {
+          get when() {
+            return _$memo(() => !!!loading())() && rows().length === 0;
+          },
+          get children() {
+            var _el$46 = _$createElement("box"),
+              _el$47 = _$createElement("text");
+            _$insertNode(_el$46, _el$47);
+            _$setProp(_el$46, "paddingLeft", 1);
+            _$setProp(_el$47, "wrapMode", "none");
+            _$insert(_el$47, (() => {
+              var _c$4 = _$memo(() => !!query().trim());
+              return () => _c$4() ? "No matches" : navigate() && navRoot() ? "empty folder · ← or .. to go up" : "(empty)";
+            })());
+            _$effect(_$p => _$setProp(_el$47, "fg", theme.text.muted, _$p));
+            return _el$46;
+          }
+        }), null);
+        _$insert(_el$44, _$createComponent(For, {
+          get each() {
+            return rows();
+          },
+          children: (row, position) => _$createComponent(RowView, {
+            row: row,
+            get position() {
+              return position();
+            }
+          })
+        }), null);
+        _$insert(_el$32, _$createComponent(Show, {
+          get when() {
+            return !simple();
+          },
+          get children() {
+            var _el$48 = _$createElement("box"),
+              _el$49 = _$createElement("text"),
+              _el$50 = _$createElement("text");
+            _$insertNode(_el$48, _el$49);
+            _$insertNode(_el$48, _el$50);
+            _$setProp(_el$48, "height", 1);
+            _$setProp(_el$48, "flexShrink", 0);
+            _$setProp(_el$48, "paddingLeft", 1);
+            _$setProp(_el$48, "paddingRight", 1);
+            _$setProp(_el$48, "flexDirection", "row");
+            _$setProp(_el$48, "gap", 1);
+            _$setProp(_el$49, "wrapMode", "none");
+            _$setProp(_el$49, "truncate", true);
+            _$setProp(_el$49, "flexGrow", 1);
+            _$insert(_el$49, (() => {
+              var _c$5 = _$memo(() => !!gitState().repo);
+              return () => _c$5() ? `±${gitState().changes.length} changes` : "no repository";
+            })());
+            _$insertNode(_el$50, _$createTextNode(`ctrl+e`));
+            _$setProp(_el$50, "wrapMode", "none");
+            _$effect(_p$ => {
+              var _v$15 = theme.text.muted,
+                _v$16 = theme.text.muted;
+              _v$15 !== _p$.e && (_p$.e = _$setProp(_el$49, "fg", _v$15, _p$.e));
+              _v$16 !== _p$.t && (_p$.t = _$setProp(_el$50, "fg", _v$16, _p$.t));
+              return _p$;
+            }, {
+              e: undefined,
+              t: undefined
+            });
+            return _el$48;
+          }
+        }), null);
         _$effect(_p$ => {
-          var _v$15 = theme.text.muted,
-            _v$16 = theme.text.muted;
-          _v$15 !== _p$.e && (_p$.e = _$setProp(_el$47, "fg", _v$15, _p$.e));
-          _v$16 !== _p$.t && (_p$.t = _$setProp(_el$48, "fg", _v$16, _p$.t));
+          var _v$17 = explorerWidth(),
+            _v$18 = surface(),
+            _v$19 = !docked(),
+            _v$20 = focus() === "explorer" ? theme.border.base : theme.background.raised.base,
+            _v$21 = theme.text.base,
+            _v$22 = TextAttributes.BOLD,
+            _v$23 = theme.text.muted,
+            _v$24 = theme.text.muted,
+            _v$25 = theme.text.muted,
+            _v$26 = query(),
+            _v$27 = searchMode() === "name" ? "Search files…" : "Search content…",
+            _v$28 = surface(),
+            _v$29 = theme.text.base,
+            _v$30 = theme.text.base;
+          _v$17 !== _p$.e && (_p$.e = _$setProp(_el$32, "width", _v$17, _p$.e));
+          _v$18 !== _p$.t && (_p$.t = _$setProp(_el$32, "backgroundColor", _v$18, _p$.t));
+          _v$19 !== _p$.a && (_p$.a = _$setProp(_el$32, "border", _v$19, _p$.a));
+          _v$20 !== _p$.o && (_p$.o = _$setProp(_el$32, "borderColor", _v$20, _p$.o));
+          _v$21 !== _p$.i && (_p$.i = _$setProp(_el$34, "fg", _v$21, _p$.i));
+          _v$22 !== _p$.n && (_p$.n = _$setProp(_el$34, "attributes", _v$22, _p$.n));
+          _v$23 !== _p$.s && (_p$.s = _$setProp(_el$36, "fg", _v$23, _p$.s));
+          _v$24 !== _p$.h && (_p$.h = _$setProp(_el$39, "fg", _v$24, _p$.h));
+          _v$25 !== _p$.r && (_p$.r = _$setProp(_el$40, "fg", _v$25, _p$.r));
+          _v$26 !== _p$.d && (_p$.d = _$setProp(_el$43, "value", _v$26, _p$.d));
+          _v$27 !== _p$.l && (_p$.l = _$setProp(_el$43, "placeholder", _v$27, _p$.l));
+          _v$28 !== _p$.u && (_p$.u = _$setProp(_el$43, "backgroundColor", _v$28, _p$.u));
+          _v$29 !== _p$.c && (_p$.c = _$setProp(_el$43, "textColor", _v$29, _p$.c));
+          _v$30 !== _p$.w && (_p$.w = _$setProp(_el$43, "focusedTextColor", _v$30, _p$.w));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined,
+          o: undefined,
+          i: undefined,
+          n: undefined,
+          s: undefined,
+          h: undefined,
+          r: undefined,
+          d: undefined,
+          l: undefined,
+          u: undefined,
+          c: undefined,
+          w: undefined
+        });
+        return _el$32;
+      }
+    }), null);
+    _$insert(_el$31, _$createComponent(Show, {
+      get when() {
+        return treeHidden();
+      },
+      get children() {
+        var _el$52 = _$createElement("box"),
+          _el$53 = _$createElement("text");
+        _$insertNode(_el$52, _el$53);
+        _$setProp(_el$52, "width", 2);
+        _$setProp(_el$52, "flexShrink", 0);
+        _$setProp(_el$52, "flexDirection", "column");
+        _$setProp(_el$52, "alignItems", "center");
+        _$setProp(_el$52, "onMouseUp", event => {
+          if (!options().mouse || event.button !== MouseButton.LEFT) return;
+          event.stopPropagation?.();
+          setTreeHidden(false);
+        });
+        _$insertNode(_el$53, _$createTextNode(`»`));
+        _$setProp(_el$53, "wrapMode", "none");
+        _$setProp(_el$53, "selectable", false);
+        _$effect(_p$ => {
+          var _v$31 = surface(),
+            _v$32 = theme.text.action.primary.selected;
+          _v$31 !== _p$.e && (_p$.e = _$setProp(_el$52, "backgroundColor", _v$31, _p$.e));
+          _v$32 !== _p$.t && (_p$.t = _$setProp(_el$53, "fg", _v$32, _p$.t));
           return _p$;
         }, {
           e: undefined,
           t: undefined
         });
-        return _el$46;
+        return _el$52;
       }
     }), null);
     _$insert(_el$31, _$createComponent(Show, {
@@ -2317,24 +2500,24 @@ export function Browser(props) {
         return showEditor();
       },
       get children() {
-        var _el$50 = _$createElement("box");
-        _$setProp(_el$50, "flexGrow", 1);
-        _$setProp(_el$50, "minWidth", 0);
-        _$setProp(_el$50, "minHeight", 0);
-        _$setProp(_el$50, "flexDirection", "column");
-        _$insert(_el$50, _$createComponent(Show, {
+        var _el$55 = _$createElement("box");
+        _$setProp(_el$55, "flexGrow", 1);
+        _$setProp(_el$55, "minWidth", 0);
+        _$setProp(_el$55, "minHeight", 0);
+        _$setProp(_el$55, "flexDirection", "column");
+        _$insert(_el$55, _$createComponent(Show, {
           get when() {
             return _$memo(() => !!!simple())() && docs().length > 0;
           },
           get children() {
-            var _el$51 = _$createElement("box"),
-              _el$52 = _$createElement("text");
-            _$insertNode(_el$51, _el$52);
-            _$setProp(_el$51, "height", 1);
-            _$setProp(_el$51, "flexShrink", 0);
-            _$setProp(_el$51, "flexDirection", "row");
-            _$setProp(_el$51, "overflow", "hidden");
-            _$insert(_el$51, _$createComponent(For, {
+            var _el$56 = _$createElement("box"),
+              _el$57 = _$createElement("text");
+            _$insertNode(_el$56, _el$57);
+            _$setProp(_el$56, "height", 1);
+            _$setProp(_el$56, "flexShrink", 0);
+            _$setProp(_el$56, "flexDirection", "row");
+            _$setProp(_el$56, "overflow", "hidden");
+            _$insert(_el$56, _$createComponent(For, {
               get each() {
                 return docs();
               },
@@ -2344,55 +2527,52 @@ export function Browser(props) {
                   return position();
                 }
               })
-            }), _el$52);
-            _$insertNode(_el$52, _$createTextNode(` `));
-            _$setProp(_el$52, "flexGrow", 1);
-            _$setProp(_el$52, "wrapMode", "none");
-            _$effect(_$p => _$setProp(_el$52, "fg", theme.text.muted, _$p));
-            return _el$51;
+            }), _el$57);
+            _$insertNode(_el$57, _$createTextNode(` `));
+            _$setProp(_el$57, "flexGrow", 1);
+            _$setProp(_el$57, "wrapMode", "none");
+            _$effect(_$p => _$setProp(_el$57, "fg", theme.text.muted, _$p));
+            return _el$56;
           }
         }), null);
-        _$insert(_el$50, _$createComponent(Show, {
+        _$insert(_el$55, _$createComponent(Show, {
           get when() {
             return doc()?.path;
           },
           keyed: true,
           get fallback() {
             return (() => {
-              var _el$84 = _$createElement("box"),
-                _el$85 = _$createElement("text"),
-                _el$86 = _$createElement("text");
-              _$insertNode(_el$84, _el$85);
-              _$insertNode(_el$84, _el$86);
-              _$setProp(_el$84, "flexGrow", 1);
-              _$setProp(_el$84, "minHeight", 0);
-              _$setProp(_el$84, "flexDirection", "column");
-              _$setProp(_el$84, "alignItems", "center");
-              _$setProp(_el$84, "justifyContent", "center");
-              _$setProp(_el$84, "gap", 1);
-              _$insert(_el$85, () => simple() ? "File browser" : "OpenCode files");
-              _$insert(_el$86, () => simple() || docked() ? "Select a file on the left and press Enter." : "Browse, edit and review without leaving the TUI.");
-              _$insert(_el$84, _$createComponent(Show, {
+              var _el$89 = _$createElement("box"),
+                _el$90 = _$createElement("text"),
+                _el$91 = _$createElement("text");
+              _$insertNode(_el$89, _el$90);
+              _$insertNode(_el$89, _el$91);
+              _$setProp(_el$89, "flexGrow", 1);
+              _$setProp(_el$89, "minHeight", 0);
+              _$setProp(_el$89, "flexDirection", "column");
+              _$setProp(_el$89, "alignItems", "center");
+              _$setProp(_el$89, "justifyContent", "center");
+              _$setProp(_el$89, "gap", 1);
+              _$insert(_el$90, () => simple() ? "File browser" : "OpenCode files");
+              _$insert(_el$91, () => simple() || docked() ? "Select a file on the left and press Enter." : "Browse, edit and review without leaving the TUI.");
+              _$insert(_el$89, _$createComponent(Show, {
                 get when() {
                   return _$memo(() => !!docked())() && !simple();
                 },
                 get children() {
-                  var _el$87 = _$createElement("text");
-                  _$insertNode(_el$87, _$createTextNode(`tab pane · ctrl+f search · e edit · ctrl+s save`));
-                  _$setProp(_el$87, "wrapMode", "word");
-                  _$effect(_$p => _$setProp(_el$87, "fg", theme.text.muted, _$p));
-                  return _el$87;
+                  var _el$92 = _$createElement("text");
+                  _$insertNode(_el$92, _$createTextNode(`tab pane · ctrl+f search · e edit · ctrl+s save`));
+                  _$setProp(_el$92, "wrapMode", "word");
+                  _$effect(_$p => _$setProp(_el$92, "fg", theme.text.muted, _$p));
+                  return _el$92;
                 }
               }), null);
-              _$insert(_el$84, _$createComponent(Show, {
+              _$insert(_el$89, _$createComponent(Show, {
                 get when() {
                   return _$memo(() => !!!simple())() && !docked();
                 },
                 get children() {
-                  var _el$89 = _$createElement("box"),
-                    _el$90 = _$createElement("text"),
-                    _el$92 = _$createElement("box"),
-                    _el$93 = _$createElement("text"),
+                  var _el$94 = _$createElement("box"),
                     _el$95 = _$createElement("text"),
                     _el$97 = _$createElement("box"),
                     _el$98 = _$createElement("text"),
@@ -2408,106 +2588,109 @@ export function Browser(props) {
                     _el$115 = _$createElement("text"),
                     _el$117 = _$createElement("box"),
                     _el$118 = _$createElement("text"),
-                    _el$120 = _$createElement("text");
-                  _$insertNode(_el$89, _el$90);
-                  _$insertNode(_el$89, _el$92);
-                  _$insertNode(_el$89, _el$97);
-                  _$insertNode(_el$89, _el$102);
-                  _$insertNode(_el$89, _el$107);
-                  _$insertNode(_el$89, _el$112);
-                  _$insertNode(_el$89, _el$117);
-                  _$setProp(_el$89, "flexDirection", "column");
-                  _$setProp(_el$89, "gap", 1);
-                  _$setProp(_el$89, "paddingTop", 1);
-                  _$setProp(_el$89, "border", true);
-                  _$setProp(_el$89, "paddingLeft", 2);
-                  _$setProp(_el$89, "paddingRight", 2);
-                  _$insertNode(_el$90, _$createTextNode(`Quick start`));
-                  _$insertNode(_el$92, _el$93);
-                  _$insertNode(_el$92, _el$95);
-                  _$setProp(_el$92, "flexDirection", "row");
-                  _$setProp(_el$92, "gap", 2);
-                  _$insertNode(_el$93, _$createTextNode(`↑ ↓ enter`));
-                  _$setProp(_el$93, "wrapMode", "none");
-                  _$setProp(_el$93, "width", 18);
-                  _$insertNode(_el$95, _$createTextNode(`move and open`));
-                  _$setProp(_el$95, "wrapMode", "none");
+                    _el$120 = _$createElement("text"),
+                    _el$122 = _$createElement("box"),
+                    _el$123 = _$createElement("text"),
+                    _el$125 = _$createElement("text");
+                  _$insertNode(_el$94, _el$95);
+                  _$insertNode(_el$94, _el$97);
+                  _$insertNode(_el$94, _el$102);
+                  _$insertNode(_el$94, _el$107);
+                  _$insertNode(_el$94, _el$112);
+                  _$insertNode(_el$94, _el$117);
+                  _$insertNode(_el$94, _el$122);
+                  _$setProp(_el$94, "flexDirection", "column");
+                  _$setProp(_el$94, "gap", 1);
+                  _$setProp(_el$94, "paddingTop", 1);
+                  _$setProp(_el$94, "border", true);
+                  _$setProp(_el$94, "paddingLeft", 2);
+                  _$setProp(_el$94, "paddingRight", 2);
+                  _$insertNode(_el$95, _$createTextNode(`Quick start`));
                   _$insertNode(_el$97, _el$98);
                   _$insertNode(_el$97, _el$100);
                   _$setProp(_el$97, "flexDirection", "row");
                   _$setProp(_el$97, "gap", 2);
-                  _$insertNode(_el$98, _$createTextNode(`ctrl+f / ctrl+e`));
+                  _$insertNode(_el$98, _$createTextNode(`↑ ↓ enter`));
                   _$setProp(_el$98, "wrapMode", "none");
                   _$setProp(_el$98, "width", 18);
-                  _$insertNode(_el$100, _$createTextNode(`search names or content`));
+                  _$insertNode(_el$100, _$createTextNode(`move and open`));
                   _$setProp(_el$100, "wrapMode", "none");
                   _$insertNode(_el$102, _el$103);
                   _$insertNode(_el$102, _el$105);
                   _$setProp(_el$102, "flexDirection", "row");
                   _$setProp(_el$102, "gap", 2);
-                  _$insertNode(_el$103, _$createTextNode(`e / ctrl+s`));
+                  _$insertNode(_el$103, _$createTextNode(`ctrl+f / ctrl+e`));
                   _$setProp(_el$103, "wrapMode", "none");
                   _$setProp(_el$103, "width", 18);
-                  _$insertNode(_el$105, _$createTextNode(`edit and save`));
+                  _$insertNode(_el$105, _$createTextNode(`search names or content`));
                   _$setProp(_el$105, "wrapMode", "none");
                   _$insertNode(_el$107, _el$108);
                   _$insertNode(_el$107, _el$110);
                   _$setProp(_el$107, "flexDirection", "row");
                   _$setProp(_el$107, "gap", 2);
-                  _$insertNode(_el$108, _$createTextNode(`ctrl+g`));
+                  _$insertNode(_el$108, _$createTextNode(`e / ctrl+s`));
                   _$setProp(_el$108, "wrapMode", "none");
                   _$setProp(_el$108, "width", 18);
-                  _$insertNode(_el$110, _$createTextNode(`git changes, stage and commit`));
+                  _$insertNode(_el$110, _$createTextNode(`edit and save`));
                   _$setProp(_el$110, "wrapMode", "none");
                   _$insertNode(_el$112, _el$113);
                   _$insertNode(_el$112, _el$115);
                   _$setProp(_el$112, "flexDirection", "row");
                   _$setProp(_el$112, "gap", 2);
-                  _$insertNode(_el$113, _$createTextNode(`F2`));
+                  _$insertNode(_el$113, _$createTextNode(`ctrl+g`));
                   _$setProp(_el$113, "wrapMode", "none");
                   _$setProp(_el$113, "width", 18);
-                  _$insertNode(_el$115, _$createTextNode(`preferences, including simple mode`));
+                  _$insertNode(_el$115, _$createTextNode(`git changes, stage and commit`));
                   _$setProp(_el$115, "wrapMode", "none");
                   _$insertNode(_el$117, _el$118);
                   _$insertNode(_el$117, _el$120);
                   _$setProp(_el$117, "flexDirection", "row");
                   _$setProp(_el$117, "gap", 2);
-                  _$insertNode(_el$118, _$createTextNode(`F1`));
+                  _$insertNode(_el$118, _$createTextNode(`F2`));
                   _$setProp(_el$118, "wrapMode", "none");
                   _$setProp(_el$118, "width", 18);
-                  _$insertNode(_el$120, _$createTextNode(`every shortcut`));
+                  _$insertNode(_el$120, _$createTextNode(`preferences, including simple mode`));
                   _$setProp(_el$120, "wrapMode", "none");
+                  _$insertNode(_el$122, _el$123);
+                  _$insertNode(_el$122, _el$125);
+                  _$setProp(_el$122, "flexDirection", "row");
+                  _$setProp(_el$122, "gap", 2);
+                  _$insertNode(_el$123, _$createTextNode(`F1`));
+                  _$setProp(_el$123, "wrapMode", "none");
+                  _$setProp(_el$123, "width", 18);
+                  _$insertNode(_el$125, _$createTextNode(`every shortcut`));
+                  _$setProp(_el$125, "wrapMode", "none");
                   _$effect(_p$ => {
-                    var _v$55 = theme.border.base,
-                      _v$56 = theme.text.action.primary.selected,
-                      _v$57 = TextAttributes.BOLD,
-                      _v$58 = theme.text.muted,
-                      _v$59 = theme.text.base,
-                      _v$60 = theme.text.muted,
-                      _v$61 = theme.text.base,
-                      _v$62 = theme.text.muted,
-                      _v$63 = theme.text.base,
-                      _v$64 = theme.text.muted,
-                      _v$65 = theme.text.base,
-                      _v$66 = theme.text.muted,
-                      _v$67 = theme.text.base,
-                      _v$68 = theme.text.muted,
-                      _v$69 = theme.text.base;
-                    _v$55 !== _p$.e && (_p$.e = _$setProp(_el$89, "borderColor", _v$55, _p$.e));
-                    _v$56 !== _p$.t && (_p$.t = _$setProp(_el$90, "fg", _v$56, _p$.t));
-                    _v$57 !== _p$.a && (_p$.a = _$setProp(_el$90, "attributes", _v$57, _p$.a));
-                    _v$58 !== _p$.o && (_p$.o = _$setProp(_el$93, "fg", _v$58, _p$.o));
-                    _v$59 !== _p$.i && (_p$.i = _$setProp(_el$95, "fg", _v$59, _p$.i));
-                    _v$60 !== _p$.n && (_p$.n = _$setProp(_el$98, "fg", _v$60, _p$.n));
-                    _v$61 !== _p$.s && (_p$.s = _$setProp(_el$100, "fg", _v$61, _p$.s));
-                    _v$62 !== _p$.h && (_p$.h = _$setProp(_el$103, "fg", _v$62, _p$.h));
-                    _v$63 !== _p$.r && (_p$.r = _$setProp(_el$105, "fg", _v$63, _p$.r));
-                    _v$64 !== _p$.d && (_p$.d = _$setProp(_el$108, "fg", _v$64, _p$.d));
-                    _v$65 !== _p$.l && (_p$.l = _$setProp(_el$110, "fg", _v$65, _p$.l));
-                    _v$66 !== _p$.u && (_p$.u = _$setProp(_el$113, "fg", _v$66, _p$.u));
-                    _v$67 !== _p$.c && (_p$.c = _$setProp(_el$115, "fg", _v$67, _p$.c));
-                    _v$68 !== _p$.w && (_p$.w = _$setProp(_el$118, "fg", _v$68, _p$.w));
-                    _v$69 !== _p$.m && (_p$.m = _$setProp(_el$120, "fg", _v$69, _p$.m));
+                    var _v$58 = theme.border.base,
+                      _v$59 = theme.text.action.primary.selected,
+                      _v$60 = TextAttributes.BOLD,
+                      _v$61 = theme.text.muted,
+                      _v$62 = theme.text.base,
+                      _v$63 = theme.text.muted,
+                      _v$64 = theme.text.base,
+                      _v$65 = theme.text.muted,
+                      _v$66 = theme.text.base,
+                      _v$67 = theme.text.muted,
+                      _v$68 = theme.text.base,
+                      _v$69 = theme.text.muted,
+                      _v$70 = theme.text.base,
+                      _v$71 = theme.text.muted,
+                      _v$72 = theme.text.base;
+                    _v$58 !== _p$.e && (_p$.e = _$setProp(_el$94, "borderColor", _v$58, _p$.e));
+                    _v$59 !== _p$.t && (_p$.t = _$setProp(_el$95, "fg", _v$59, _p$.t));
+                    _v$60 !== _p$.a && (_p$.a = _$setProp(_el$95, "attributes", _v$60, _p$.a));
+                    _v$61 !== _p$.o && (_p$.o = _$setProp(_el$98, "fg", _v$61, _p$.o));
+                    _v$62 !== _p$.i && (_p$.i = _$setProp(_el$100, "fg", _v$62, _p$.i));
+                    _v$63 !== _p$.n && (_p$.n = _$setProp(_el$103, "fg", _v$63, _p$.n));
+                    _v$64 !== _p$.s && (_p$.s = _$setProp(_el$105, "fg", _v$64, _p$.s));
+                    _v$65 !== _p$.h && (_p$.h = _$setProp(_el$108, "fg", _v$65, _p$.h));
+                    _v$66 !== _p$.r && (_p$.r = _$setProp(_el$110, "fg", _v$66, _p$.r));
+                    _v$67 !== _p$.d && (_p$.d = _$setProp(_el$113, "fg", _v$67, _p$.d));
+                    _v$68 !== _p$.l && (_p$.l = _$setProp(_el$115, "fg", _v$68, _p$.l));
+                    _v$69 !== _p$.u && (_p$.u = _$setProp(_el$118, "fg", _v$69, _p$.u));
+                    _v$70 !== _p$.c && (_p$.c = _$setProp(_el$120, "fg", _v$70, _p$.c));
+                    _v$71 !== _p$.w && (_p$.w = _$setProp(_el$123, "fg", _v$71, _p$.w));
+                    _v$72 !== _p$.m && (_p$.m = _$setProp(_el$125, "fg", _v$72, _p$.m));
                     return _p$;
                   }, {
                     e: undefined,
@@ -2526,46 +2709,46 @@ export function Browser(props) {
                     w: undefined,
                     m: undefined
                   });
-                  return _el$89;
+                  return _el$94;
                 }
               }), null);
               _$effect(_p$ => {
-                var _v$70 = theme.text.base,
-                  _v$71 = TextAttributes.BOLD,
-                  _v$72 = theme.text.muted;
-                _v$70 !== _p$.e && (_p$.e = _$setProp(_el$85, "fg", _v$70, _p$.e));
-                _v$71 !== _p$.t && (_p$.t = _$setProp(_el$85, "attributes", _v$71, _p$.t));
-                _v$72 !== _p$.a && (_p$.a = _$setProp(_el$86, "fg", _v$72, _p$.a));
+                var _v$73 = theme.text.base,
+                  _v$74 = TextAttributes.BOLD,
+                  _v$75 = theme.text.muted;
+                _v$73 !== _p$.e && (_p$.e = _$setProp(_el$90, "fg", _v$73, _p$.e));
+                _v$74 !== _p$.t && (_p$.t = _$setProp(_el$90, "attributes", _v$74, _p$.t));
+                _v$75 !== _p$.a && (_p$.a = _$setProp(_el$91, "fg", _v$75, _p$.a));
                 return _p$;
               }, {
                 e: undefined,
                 t: undefined,
                 a: undefined
               });
-              return _el$84;
+              return _el$89;
             })();
           },
           get children() {
             return _$createComponent(ErrorBoundary, {
               fallback: cause => (() => {
-                var _el$122 = _$createElement("box"),
-                  _el$123 = _$createElement("text"),
-                  _el$124 = _$createTextNode(`Could not render this file: `);
-                _$insertNode(_el$122, _el$123);
-                _$setProp(_el$122, "flexGrow", 1);
-                _$setProp(_el$122, "padding", 1);
-                _$insertNode(_el$123, _el$124);
-                _$setProp(_el$123, "wrapMode", "word");
-                _$insert(_el$123, () => message(cause), null);
-                _$effect(_$p => _$setProp(_el$123, "fg", theme.text.feedback.error.base, _$p));
-                return _el$122;
+                var _el$127 = _$createElement("box"),
+                  _el$128 = _$createElement("text"),
+                  _el$129 = _$createTextNode(`Could not render this file: `);
+                _$insertNode(_el$127, _el$128);
+                _$setProp(_el$127, "flexGrow", 1);
+                _$setProp(_el$127, "padding", 1);
+                _$insertNode(_el$128, _el$129);
+                _$setProp(_el$128, "wrapMode", "word");
+                _$insert(_el$128, () => message(cause), null);
+                _$effect(_$p => _$setProp(_el$128, "fg", theme.text.feedback.error.base, _$p));
+                return _el$127;
               })(),
               get children() {
-                var _el$54 = _$createElement("box");
-                _$setProp(_el$54, "flexGrow", 1);
-                _$setProp(_el$54, "minHeight", 0);
-                _$setProp(_el$54, "flexDirection", "column");
-                _$insert(_el$54, _$createComponent(EditorView, {
+                var _el$59 = _$createElement("box");
+                _$setProp(_el$59, "flexGrow", 1);
+                _$setProp(_el$59, "minHeight", 0);
+                _$setProp(_el$59, "flexDirection", "column");
+                _$insert(_el$59, _$createComponent(EditorView, {
                   get doc() {
                     return doc();
                   },
@@ -2586,6 +2769,23 @@ export function Browser(props) {
                   get line() {
                     return pendingLine();
                   },
+                  get initialScroll() {
+                    return positions.get(doc().path)?.scroll ?? 0;
+                  },
+                  get initialLine() {
+                    return positions.get(doc().path)?.line;
+                  },
+                  get initialColumn() {
+                    return positions.get(doc().path)?.column;
+                  },
+                  onPosition: position => {
+                    const path = doc()?.path;
+                    if (!path) return;
+                    positions.set(path, {
+                      ...positions.get(path),
+                      ...position
+                    });
+                  },
                   onText: text => updateDoc(doc(), text),
                   onSave: () => void save(),
                   onCursor: () => {},
@@ -2594,13 +2794,13 @@ export function Browser(props) {
                   onToggleMode: toggleEdit,
                   onReady: api => editorApi = api
                 }));
-                return _el$54;
+                return _el$59;
               }
             });
           }
         }), null);
-        _$effect(_$p => _$setProp(_el$50, "backgroundColor", surface(), _$p));
-        return _el$50;
+        _$effect(_$p => _$setProp(_el$55, "backgroundColor", surface(), _$p));
+        return _el$55;
       }
     }), null);
     _$insert(_el$31, _$createComponent(Show, {
@@ -2608,61 +2808,61 @@ export function Browser(props) {
         return showChanges();
       },
       get children() {
-        var _el$55 = _$createElement("box"),
-          _el$56 = _$createElement("box"),
-          _el$57 = _$createElement("text"),
-          _el$59 = _$createElement("text"),
-          _el$60 = _$createElement("text"),
-          _el$61 = _$createTextNode(` staged`),
-          _el$62 = _$createElement("scrollbox"),
-          _el$67 = _$createElement("box"),
-          _el$68 = _$createElement("text"),
-          _el$70 = _$createElement("text"),
-          _el$72 = _$createElement("text"),
-          _el$74 = _$createElement("text");
-        _$insertNode(_el$55, _el$56);
-        _$insertNode(_el$55, _el$62);
-        _$insertNode(_el$55, _el$67);
-        _$setProp(_el$55, "width", 30);
-        _$setProp(_el$55, "flexShrink", 0);
-        _$setProp(_el$55, "minHeight", 0);
-        _$setProp(_el$55, "flexDirection", "column");
-        _$setProp(_el$55, "border", true);
-        _$insertNode(_el$56, _el$57);
-        _$insertNode(_el$56, _el$59);
-        _$insertNode(_el$56, _el$60);
-        _$setProp(_el$56, "height", 1);
-        _$setProp(_el$56, "flexShrink", 0);
-        _$setProp(_el$56, "paddingLeft", 1);
-        _$setProp(_el$56, "paddingRight", 1);
-        _$setProp(_el$56, "flexDirection", "row");
-        _$setProp(_el$56, "gap", 1);
-        _$insertNode(_el$57, _$createTextNode(`CHANGES`));
-        _$setProp(_el$57, "wrapMode", "none");
-        _$setProp(_el$59, "wrapMode", "none");
-        _$setProp(_el$59, "flexGrow", 1);
-        _$insert(_el$59, () => gitState().changes.length);
+        var _el$60 = _$createElement("box"),
+          _el$61 = _$createElement("box"),
+          _el$62 = _$createElement("text"),
+          _el$64 = _$createElement("text"),
+          _el$65 = _$createElement("text"),
+          _el$66 = _$createTextNode(` staged`),
+          _el$67 = _$createElement("scrollbox"),
+          _el$72 = _$createElement("box"),
+          _el$73 = _$createElement("text"),
+          _el$75 = _$createElement("text"),
+          _el$77 = _$createElement("text"),
+          _el$79 = _$createElement("text");
         _$insertNode(_el$60, _el$61);
-        _$setProp(_el$60, "wrapMode", "none");
-        _$insert(_el$60, () => gitState().staged, _el$61);
-        _$setProp(_el$62, "flexGrow", 1);
-        _$setProp(_el$62, "minHeight", 0);
-        _$setProp(_el$62, "verticalScrollbarOptions", {
+        _$insertNode(_el$60, _el$67);
+        _$insertNode(_el$60, _el$72);
+        _$setProp(_el$60, "width", 30);
+        _$setProp(_el$60, "flexShrink", 0);
+        _$setProp(_el$60, "minHeight", 0);
+        _$setProp(_el$60, "flexDirection", "column");
+        _$setProp(_el$60, "border", true);
+        _$insertNode(_el$61, _el$62);
+        _$insertNode(_el$61, _el$64);
+        _$insertNode(_el$61, _el$65);
+        _$setProp(_el$61, "height", 1);
+        _$setProp(_el$61, "flexShrink", 0);
+        _$setProp(_el$61, "paddingLeft", 1);
+        _$setProp(_el$61, "paddingRight", 1);
+        _$setProp(_el$61, "flexDirection", "row");
+        _$setProp(_el$61, "gap", 1);
+        _$insertNode(_el$62, _$createTextNode(`CHANGES`));
+        _$setProp(_el$62, "wrapMode", "none");
+        _$setProp(_el$64, "wrapMode", "none");
+        _$setProp(_el$64, "flexGrow", 1);
+        _$insert(_el$64, () => gitState().changes.length);
+        _$insertNode(_el$65, _el$66);
+        _$setProp(_el$65, "wrapMode", "none");
+        _$insert(_el$65, () => gitState().staged, _el$66);
+        _$setProp(_el$67, "flexGrow", 1);
+        _$setProp(_el$67, "minHeight", 0);
+        _$setProp(_el$67, "verticalScrollbarOptions", {
           visible: true
         });
-        _$insert(_el$62, _$createComponent(Show, {
+        _$insert(_el$67, _$createComponent(Show, {
           get when() {
             return gitState().changes.length === 0;
           },
           get children() {
-            var _el$63 = _$createElement("text");
-            _$insertNode(_el$63, _$createTextNode(`No changes`));
-            _$setProp(_el$63, "paddingLeft", 1);
-            _$effect(_$p => _$setProp(_el$63, "fg", theme.text.muted, _$p));
-            return _el$63;
+            var _el$68 = _$createElement("text");
+            _$insertNode(_el$68, _$createTextNode(`No changes`));
+            _$setProp(_el$68, "paddingLeft", 1);
+            _$effect(_$p => _$setProp(_el$68, "fg", theme.text.muted, _$p));
+            return _el$68;
           }
         }), null);
-        _$insert(_el$62, _$createComponent(For, {
+        _$insert(_el$67, _$createComponent(For, {
           get each() {
             return gitState().changes;
           },
@@ -2673,18 +2873,18 @@ export function Browser(props) {
             }
           })
         }), null);
-        _$insert(_el$55, _$createComponent(Show, {
+        _$insert(_el$60, _$createComponent(Show, {
           get when() {
             return composing();
           },
           get children() {
-            var _el$65 = _$createElement("box"),
-              _el$66 = _$createElement("input");
-            _$insertNode(_el$65, _el$66);
-            _$setProp(_el$65, "height", 1);
-            _$setProp(_el$65, "flexShrink", 0);
-            _$setProp(_el$65, "paddingLeft", 1);
-            _$setProp(_el$65, "paddingRight", 1);
+            var _el$70 = _$createElement("box"),
+              _el$71 = _$createElement("input");
+            _$insertNode(_el$70, _el$71);
+            _$setProp(_el$70, "height", 1);
+            _$setProp(_el$70, "flexShrink", 0);
+            _$setProp(_el$70, "paddingLeft", 1);
+            _$setProp(_el$70, "paddingRight", 1);
             _$use(element => {
               commitInput = element;
               setTimeout(() => {
@@ -2692,11 +2892,11 @@ export function Browser(props) {
                   element.focus();
                 } catch {}
               }, 20);
-            }, _el$66);
-            _$setProp(_el$66, "placeholder", "Commit message…");
-            _$setProp(_el$66, "focused", true);
-            _$setProp(_el$66, "onInput", value => setCommitMessage(value));
-            _$setProp(_el$66, "onKeyDown", event => {
+            }, _el$71);
+            _$setProp(_el$71, "placeholder", "Commit message…");
+            _$setProp(_el$71, "focused", true);
+            _$setProp(_el$71, "onInput", value => setCommitMessage(value));
+            _$setProp(_el$71, "onKeyDown", event => {
               const key = String(event.name ?? event.key ?? "").toLowerCase();
               if (key === "escape") {
                 setComposing(false);
@@ -2708,14 +2908,14 @@ export function Browser(props) {
               }
             });
             _$effect(_p$ => {
-              var _v$17 = commitMessage(),
-                _v$18 = surface(),
-                _v$19 = theme.text.base,
-                _v$20 = theme.text.base;
-              _v$17 !== _p$.e && (_p$.e = _$setProp(_el$66, "value", _v$17, _p$.e));
-              _v$18 !== _p$.t && (_p$.t = _$setProp(_el$66, "backgroundColor", _v$18, _p$.t));
-              _v$19 !== _p$.a && (_p$.a = _$setProp(_el$66, "textColor", _v$19, _p$.a));
-              _v$20 !== _p$.o && (_p$.o = _$setProp(_el$66, "focusedTextColor", _v$20, _p$.o));
+              var _v$33 = commitMessage(),
+                _v$34 = surface(),
+                _v$35 = theme.text.base,
+                _v$36 = theme.text.base;
+              _v$33 !== _p$.e && (_p$.e = _$setProp(_el$71, "value", _v$33, _p$.e));
+              _v$34 !== _p$.t && (_p$.t = _$setProp(_el$71, "backgroundColor", _v$34, _p$.t));
+              _v$35 !== _p$.a && (_p$.a = _$setProp(_el$71, "textColor", _v$35, _p$.a));
+              _v$36 !== _p$.o && (_p$.o = _$setProp(_el$71, "focusedTextColor", _v$36, _p$.o));
               return _p$;
             }, {
               e: undefined,
@@ -2723,46 +2923,46 @@ export function Browser(props) {
               a: undefined,
               o: undefined
             });
-            return _el$65;
+            return _el$70;
           }
-        }), _el$67);
-        _$insertNode(_el$67, _el$68);
-        _$insertNode(_el$67, _el$70);
-        _$insertNode(_el$67, _el$72);
-        _$insertNode(_el$67, _el$74);
-        _$setProp(_el$67, "flexShrink", 0);
-        _$setProp(_el$67, "flexDirection", "column");
-        _$setProp(_el$67, "paddingLeft", 1);
-        _$setProp(_el$67, "paddingRight", 1);
-        _$insertNode(_el$68, _$createTextNode(`a stage · u unstage`));
-        _$setProp(_el$68, "wrapMode", "none");
-        _$insertNode(_el$70, _$createTextNode(`d discard · c commit`));
-        _$setProp(_el$70, "wrapMode", "none");
-        _$insertNode(_el$72, _$createTextNode(`l pull · p push`));
-        _$setProp(_el$72, "wrapMode", "none");
-        _$insertNode(_el$74, _$createTextNode(`g history · b branch · R`));
-        _$setProp(_el$74, "wrapMode", "none");
+        }), _el$72);
+        _$insertNode(_el$72, _el$73);
+        _$insertNode(_el$72, _el$75);
+        _$insertNode(_el$72, _el$77);
+        _$insertNode(_el$72, _el$79);
+        _$setProp(_el$72, "flexShrink", 0);
+        _$setProp(_el$72, "flexDirection", "column");
+        _$setProp(_el$72, "paddingLeft", 1);
+        _$setProp(_el$72, "paddingRight", 1);
+        _$insertNode(_el$73, _$createTextNode(`a stage · u unstage`));
+        _$setProp(_el$73, "wrapMode", "none");
+        _$insertNode(_el$75, _$createTextNode(`d discard · c commit`));
+        _$setProp(_el$75, "wrapMode", "none");
+        _$insertNode(_el$77, _$createTextNode(`l pull · p push`));
+        _$setProp(_el$77, "wrapMode", "none");
+        _$insertNode(_el$79, _$createTextNode(`g history · b branch · R`));
+        _$setProp(_el$79, "wrapMode", "none");
         _$effect(_p$ => {
-          var _v$21 = focus() === "changes" ? theme.border.base : theme.background.raised.base,
-            _v$22 = surface(),
-            _v$23 = theme.text.base,
-            _v$24 = TextAttributes.BOLD,
-            _v$25 = theme.text.muted,
-            _v$26 = theme.text.muted,
-            _v$27 = theme.text.muted,
-            _v$28 = theme.text.muted,
-            _v$29 = theme.text.muted,
-            _v$30 = theme.text.muted;
-          _v$21 !== _p$.e && (_p$.e = _$setProp(_el$55, "borderColor", _v$21, _p$.e));
-          _v$22 !== _p$.t && (_p$.t = _$setProp(_el$55, "backgroundColor", _v$22, _p$.t));
-          _v$23 !== _p$.a && (_p$.a = _$setProp(_el$57, "fg", _v$23, _p$.a));
-          _v$24 !== _p$.o && (_p$.o = _$setProp(_el$57, "attributes", _v$24, _p$.o));
-          _v$25 !== _p$.i && (_p$.i = _$setProp(_el$59, "fg", _v$25, _p$.i));
-          _v$26 !== _p$.n && (_p$.n = _$setProp(_el$60, "fg", _v$26, _p$.n));
-          _v$27 !== _p$.s && (_p$.s = _$setProp(_el$68, "fg", _v$27, _p$.s));
-          _v$28 !== _p$.h && (_p$.h = _$setProp(_el$70, "fg", _v$28, _p$.h));
-          _v$29 !== _p$.r && (_p$.r = _$setProp(_el$72, "fg", _v$29, _p$.r));
-          _v$30 !== _p$.d && (_p$.d = _$setProp(_el$74, "fg", _v$30, _p$.d));
+          var _v$37 = focus() === "changes" ? theme.border.base : theme.background.raised.base,
+            _v$38 = surface(),
+            _v$39 = theme.text.base,
+            _v$40 = TextAttributes.BOLD,
+            _v$41 = theme.text.muted,
+            _v$42 = theme.text.muted,
+            _v$43 = theme.text.muted,
+            _v$44 = theme.text.muted,
+            _v$45 = theme.text.muted,
+            _v$46 = theme.text.muted;
+          _v$37 !== _p$.e && (_p$.e = _$setProp(_el$60, "borderColor", _v$37, _p$.e));
+          _v$38 !== _p$.t && (_p$.t = _$setProp(_el$60, "backgroundColor", _v$38, _p$.t));
+          _v$39 !== _p$.a && (_p$.a = _$setProp(_el$62, "fg", _v$39, _p$.a));
+          _v$40 !== _p$.o && (_p$.o = _$setProp(_el$62, "attributes", _v$40, _p$.o));
+          _v$41 !== _p$.i && (_p$.i = _$setProp(_el$64, "fg", _v$41, _p$.i));
+          _v$42 !== _p$.n && (_p$.n = _$setProp(_el$65, "fg", _v$42, _p$.n));
+          _v$43 !== _p$.s && (_p$.s = _$setProp(_el$73, "fg", _v$43, _p$.s));
+          _v$44 !== _p$.h && (_p$.h = _$setProp(_el$75, "fg", _v$44, _p$.h));
+          _v$45 !== _p$.r && (_p$.r = _$setProp(_el$77, "fg", _v$45, _p$.r));
+          _v$46 !== _p$.d && (_p$.d = _$setProp(_el$79, "fg", _v$46, _p$.d));
           return _p$;
         }, {
           e: undefined,
@@ -2776,7 +2976,7 @@ export function Browser(props) {
           r: undefined,
           d: undefined
         });
-        return _el$55;
+        return _el$60;
       }
     }), null);
     _$insert(_el$31, _$createComponent(Show, {
@@ -2784,10 +2984,10 @@ export function Browser(props) {
         return _$memo(() => !!!docked())() && options().mouse;
       },
       get children() {
-        var _el$76 = _$createElement("box");
-        _$setProp(_el$76, "width", 1);
-        _$setProp(_el$76, "flexShrink", 0);
-        _$setProp(_el$76, "onMouseDown", event => {
+        var _el$81 = _$createElement("box");
+        _$setProp(_el$81, "width", 1);
+        _$setProp(_el$81, "flexShrink", 0);
+        _$setProp(_el$81, "onMouseDown", event => {
           if (event.button !== MouseButton.LEFT) return;
           event.stopPropagation();
           setDrag({
@@ -2795,17 +2995,17 @@ export function Browser(props) {
             width: explorerWidth()
           });
         });
-        _$setProp(_el$76, "onMouseDrag", event => {
+        _$setProp(_el$81, "onMouseDrag", event => {
           if (!drag().active) return;
           event.stopPropagation();
           setSplitWidth(Math.max(18, Math.min(60, drag().width + event.deltaX)));
         });
-        _$setProp(_el$76, "onMouseUp", () => setDrag({
+        _$setProp(_el$81, "onMouseUp", () => setDrag({
           active: false,
           width: 0
         }));
-        _$effect(_$p => _$setProp(_el$76, "backgroundColor", drag().active ? theme.border.base : surface(), _$p));
-        return _el$76;
+        _$effect(_$p => _$setProp(_el$81, "backgroundColor", drag().active ? theme.border.base : surface(), _$p));
+        return _el$81;
       }
     }), null);
     _$insert(_el$24, _$createComponent(Show, {
@@ -2813,104 +3013,78 @@ export function Browser(props) {
         return status();
       },
       get children() {
-        var _el$77 = _$createElement("box"),
-          _el$78 = _$createElement("text");
-        _$insertNode(_el$77, _el$78);
-        _$setProp(_el$77, "height", 1);
-        _$setProp(_el$77, "flexShrink", 0);
-        _$setProp(_el$77, "paddingRight", 2);
-        _$setProp(_el$78, "wrapMode", "none");
-        _$setProp(_el$78, "truncate", true);
-        _$insert(_el$78, status);
+        var _el$82 = _$createElement("box"),
+          _el$83 = _$createElement("text");
+        _$insertNode(_el$82, _el$83);
+        _$setProp(_el$82, "height", 1);
+        _$setProp(_el$82, "flexShrink", 0);
+        _$setProp(_el$82, "paddingRight", 2);
+        _$setProp(_el$83, "wrapMode", "none");
+        _$setProp(_el$83, "truncate", true);
+        _$insert(_el$83, status);
         _$effect(_p$ => {
-          var _v$31 = docked() ? 2 : 1,
-            _v$32 = theme.text.feedback.info.base;
-          _v$31 !== _p$.e && (_p$.e = _$setProp(_el$77, "paddingLeft", _v$31, _p$.e));
-          _v$32 !== _p$.t && (_p$.t = _$setProp(_el$78, "fg", _v$32, _p$.t));
+          var _v$47 = docked() ? 2 : 1,
+            _v$48 = theme.text.feedback.info.base;
+          _v$47 !== _p$.e && (_p$.e = _$setProp(_el$82, "paddingLeft", _v$47, _p$.e));
+          _v$48 !== _p$.t && (_p$.t = _$setProp(_el$83, "fg", _v$48, _p$.t));
           return _p$;
         }, {
           e: undefined,
           t: undefined
         });
-        return _el$77;
+        return _el$82;
       }
-    }), _el$79);
-    _$insertNode(_el$79, _el$80);
-    _$insertNode(_el$79, _el$81);
-    _$setProp(_el$79, "height", 1);
-    _$setProp(_el$79, "flexShrink", 0);
-    _$setProp(_el$79, "paddingRight", 2);
-    _$setProp(_el$79, "flexDirection", "row");
-    _$setProp(_el$79, "gap", 1);
-    _$setProp(_el$80, "wrapMode", "none");
-    _$setProp(_el$80, "truncate", true);
-    _$setProp(_el$80, "flexGrow", 1);
-    _$insert(_el$80, (() => {
+    }), _el$84);
+    _$insertNode(_el$84, _el$85);
+    _$insertNode(_el$84, _el$86);
+    _$setProp(_el$84, "height", 1);
+    _$setProp(_el$84, "flexShrink", 0);
+    _$setProp(_el$84, "paddingRight", 2);
+    _$setProp(_el$84, "flexDirection", "row");
+    _$setProp(_el$84, "gap", 1);
+    _$setProp(_el$85, "wrapMode", "none");
+    _$setProp(_el$85, "truncate", true);
+    _$setProp(_el$85, "flexGrow", 1);
+    _$insert(_el$85, (() => {
       var _c$6 = _$memo(() => !!typing());
-      return () => _c$6() ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help" : _$memo(() => focus() === "changes")() ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches" : focus() === "editor" ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help" : "↑↓ move · enter open · right click actions · tab pane · ctrl+f search · F2 prefs · F1 help";
+      return () => _c$6() ? "typing · ctrl+s save · ctrl+←/→ tabs · esc leaves · F4 preview · F1 help" : _$memo(() => focus() === "changes")() ? "a stage · u unstage · d discard · c commit · l pull · p push · g history · b branches" : focus() === "editor" ? "e edit · ctrl+s save · ctrl+w close · ctrl+←/→ tabs · m markdown · F1 help" : "↑↓ move · enter open · right click actions · tab pane · ctrl+f search · F6 tree · F2 prefs · F1 help";
     })());
-    _$setProp(_el$81, "wrapMode", "none");
-    _$insert(_el$81, (() => {
+    _$setProp(_el$86, "wrapMode", "none");
+    _$insert(_el$86, (() => {
       var _c$7 = _$memo(() => !!simple());
       return () => _c$7() ? "simple" : `${docs().length} tabs`;
     })());
-    _$insert(_el$79, _$createComponent(Show, {
+    _$insert(_el$84, _$createComponent(Show, {
       get when() {
         return props.panel;
       },
       get children() {
-        var _el$82 = _$createElement("text");
-        _$insertNode(_el$82, _$createTextNode(`f fullscreen`));
-        _$setProp(_el$82, "wrapMode", "none");
-        _$effect(_$p => _$setProp(_el$82, "fg", theme.text.muted, _$p));
-        return _el$82;
+        var _el$87 = _$createElement("text");
+        _$insertNode(_el$87, _$createTextNode(`f fullscreen`));
+        _$setProp(_el$87, "wrapMode", "none");
+        _$effect(_$p => _$setProp(_el$87, "fg", theme.text.muted, _$p));
+        return _el$87;
       }
     }), null);
     _$effect(_p$ => {
-      var _v$33 = surface(),
-        _v$34 = docked() ? 2 : 1,
-        _v$35 = theme.text.base,
-        _v$36 = TextAttributes.BOLD,
-        _v$37 = theme.text.muted,
-        _v$38 = theme.text.muted,
-        _v$39 = explorerWidth(),
-        _v$40 = surface(),
-        _v$41 = !docked(),
-        _v$42 = focus() === "explorer" ? theme.border.base : theme.background.raised.base,
-        _v$43 = theme.text.base,
-        _v$44 = TextAttributes.BOLD,
-        _v$45 = theme.text.muted,
-        _v$46 = theme.text.muted,
-        _v$47 = query(),
-        _v$48 = searchMode() === "name" ? "Search files…" : "Search content…",
-        _v$49 = surface(),
-        _v$50 = theme.text.base,
+      var _v$49 = surface(),
+        _v$50 = docked() ? 2 : 1,
         _v$51 = theme.text.base,
-        _v$52 = docked() ? 2 : 1,
+        _v$52 = TextAttributes.BOLD,
         _v$53 = theme.text.muted,
-        _v$54 = theme.text.muted;
-      _v$33 !== _p$.e && (_p$.e = _$setProp(_el$24, "backgroundColor", _v$33, _p$.e));
-      _v$34 !== _p$.t && (_p$.t = _$setProp(_el$25, "paddingLeft", _v$34, _p$.t));
-      _v$35 !== _p$.a && (_p$.a = _$setProp(_el$26, "fg", _v$35, _p$.a));
-      _v$36 !== _p$.o && (_p$.o = _$setProp(_el$26, "attributes", _v$36, _p$.o));
-      _v$37 !== _p$.i && (_p$.i = _$setProp(_el$28, "fg", _v$37, _p$.i));
-      _v$38 !== _p$.n && (_p$.n = _$setProp(_el$30, "fg", _v$38, _p$.n));
-      _v$39 !== _p$.s && (_p$.s = _$setProp(_el$32, "width", _v$39, _p$.s));
-      _v$40 !== _p$.h && (_p$.h = _$setProp(_el$32, "backgroundColor", _v$40, _p$.h));
-      _v$41 !== _p$.r && (_p$.r = _$setProp(_el$32, "border", _v$41, _p$.r));
-      _v$42 !== _p$.d && (_p$.d = _$setProp(_el$32, "borderColor", _v$42, _p$.d));
-      _v$43 !== _p$.l && (_p$.l = _$setProp(_el$34, "fg", _v$43, _p$.l));
-      _v$44 !== _p$.u && (_p$.u = _$setProp(_el$34, "attributes", _v$44, _p$.u));
-      _v$45 !== _p$.c && (_p$.c = _$setProp(_el$36, "fg", _v$45, _p$.c));
-      _v$46 !== _p$.w && (_p$.w = _$setProp(_el$39, "fg", _v$46, _p$.w));
-      _v$47 !== _p$.m && (_p$.m = _$setProp(_el$41, "value", _v$47, _p$.m));
-      _v$48 !== _p$.f && (_p$.f = _$setProp(_el$41, "placeholder", _v$48, _p$.f));
-      _v$49 !== _p$.y && (_p$.y = _$setProp(_el$41, "backgroundColor", _v$49, _p$.y));
-      _v$50 !== _p$.g && (_p$.g = _$setProp(_el$41, "textColor", _v$50, _p$.g));
-      _v$51 !== _p$.p && (_p$.p = _$setProp(_el$41, "focusedTextColor", _v$51, _p$.p));
-      _v$52 !== _p$.b && (_p$.b = _$setProp(_el$79, "paddingLeft", _v$52, _p$.b));
-      _v$53 !== _p$.T && (_p$.T = _$setProp(_el$80, "fg", _v$53, _p$.T));
-      _v$54 !== _p$.A && (_p$.A = _$setProp(_el$81, "fg", _v$54, _p$.A));
+        _v$54 = theme.text.muted,
+        _v$55 = docked() ? 2 : 1,
+        _v$56 = theme.text.muted,
+        _v$57 = theme.text.muted;
+      _v$49 !== _p$.e && (_p$.e = _$setProp(_el$24, "backgroundColor", _v$49, _p$.e));
+      _v$50 !== _p$.t && (_p$.t = _$setProp(_el$25, "paddingLeft", _v$50, _p$.t));
+      _v$51 !== _p$.a && (_p$.a = _$setProp(_el$26, "fg", _v$51, _p$.a));
+      _v$52 !== _p$.o && (_p$.o = _$setProp(_el$26, "attributes", _v$52, _p$.o));
+      _v$53 !== _p$.i && (_p$.i = _$setProp(_el$28, "fg", _v$53, _p$.i));
+      _v$54 !== _p$.n && (_p$.n = _$setProp(_el$30, "fg", _v$54, _p$.n));
+      _v$55 !== _p$.s && (_p$.s = _$setProp(_el$84, "paddingLeft", _v$55, _p$.s));
+      _v$56 !== _p$.h && (_p$.h = _$setProp(_el$85, "fg", _v$56, _p$.h));
+      _v$57 !== _p$.r && (_p$.r = _$setProp(_el$86, "fg", _v$57, _p$.r));
       return _p$;
     }, {
       e: undefined,
@@ -2921,20 +3095,7 @@ export function Browser(props) {
       n: undefined,
       s: undefined,
       h: undefined,
-      r: undefined,
-      d: undefined,
-      l: undefined,
-      u: undefined,
-      c: undefined,
-      w: undefined,
-      m: undefined,
-      f: undefined,
-      y: undefined,
-      g: undefined,
-      p: undefined,
-      b: undefined,
-      T: undefined,
-      A: undefined
+      r: undefined
     });
     return _el$24;
   })();
